@@ -1,8 +1,8 @@
 {
   "corpus_id": "v2",
   "source": "arXiv",
-  "spec": "utils/corpus/corpus_v2.yaml",
-  "out_dir": "utils/files/v2",
+  "spec": "experiments/dataset/corpus/corpus.yaml",
+  "out_dir": "data/corpus",
   "n_papers": 30,
   "n_rejected": 0,
   "rejected_ids": [],
