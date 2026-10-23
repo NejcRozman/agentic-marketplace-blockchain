@@ -22,9 +22,7 @@ from analysis import (
     table_decision_cost,
     table_h1_pricing_behaviour,
     table_dataset,
-    table_h1_reasoning_cost,
     table_h2_estimation_accuracy,
-    table_h2_estimation_cost,
     table_h2_oracle_abstention,
 )
 
@@ -37,13 +35,11 @@ FIGURES = [
     fig_h1_llm_conditions,
     fig_h1_llm_margin_traces,
     table_h1_pricing_behaviour,
-    table_h1_reasoning_cost,
     fig_h2_trajectories,
     fig_h2_conditions,
     fig_h2_mechanism,
     table_h2_oracle_abstention,
     table_h2_estimation_accuracy,
-    table_h2_estimation_cost,
     table_decision_cost,
     fig_bridge_pricer_vs_estimator,
     stats_outcomes,

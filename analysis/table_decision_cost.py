@@ -10,11 +10,11 @@ Adaptive, 95% t interval; * = significant after Holm (data.holm_table).
 
     .venv/bin/python -m analysis.table_decision_cost
 """
+import json
 import statistics as st
 
-from analysis.data import final_net, paired_difference, significant
-from analysis.table_h1_reasoning_cost import reasoning
-from analysis.table_h2_estimation_cost import calls_cost
+from agents.common import paths
+from analysis.data import _groups, final_net, ok_runs, paired_difference, significant
 
 XD = "X_decomposed"
 PRICING = [  # (strategy, model, cell, LLM group)
@@ -33,6 +33,19 @@ ESTIMATION = [  # (model, cell vs Adaptive, Adaptive group, cell vs Regression)
 ]
 
 
+def llm_cost(cells, group):
+    """Mean billed LLM cost, calls and tokens per run of the group's agent, pooled over the cells."""
+    cost, calls, tokens = [], [], []
+    for cell in cells:
+        for run in ok_runs(cell):
+            pid = _groups(run)[group][0]
+            f = json.loads((paths.resolve(run["run_dir"]) / f"provider_{pid}_status.json").read_text())["financials"]
+            cost.append(f.get("reasoning_llm_costs") or 0.0)
+            calls.append(f.get("reasoning_llm_calls") or 0)
+            tokens.append((f.get("reasoning_input_tokens") or 0) + (f.get("reasoning_output_tokens") or 0))
+    return st.mean(cost), st.mean(calls), st.mean(tokens)
+
+
 def row(name, model, cost, calls, tokens, cell, group, opp):
     net = st.mean(final_net(cell, group))
     d = paired_difference(cell, group, opp)
@@ -41,8 +54,8 @@ def row(name, model, cost, calls, tokens, cell, group, opp):
 
 
 def main():
-    sections = [("Price-setting", [row(n, m, *reasoning(c, g), c, g, "B_s3") for n, m, c, g in PRICING]),
-                ("Cost estimation", [row("LLM-Estimate", m, *calls_cost([ch, cr]), ch, XD, gh)
+    sections = [("Price-setting", [row(n, m, *llm_cost([c], g), c, g, "B_s3") for n, m, c, g in PRICING]),
+                ("Cost estimation", [row("LLM-Estimate", m, *llm_cost([ch, cr], XD), ch, XD, gh)
                                      for m, ch, gh, cr in ESTIMATION])]
     head = ["Strategy", "Model", "Cost/run", "Calls/run", "Tokens/run", "Net", "Before cost", "Δ vs Adaptive"]
     print("| " + " | ".join(head) + " |")

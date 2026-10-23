@@ -15,7 +15,7 @@ Gas share = mean gas / (mean net balance + mean gas), quoted in Discussion 7.4.
 import json
 import statistics as st
 
-from analysis.in_market_sigma import requirement_means
+from analysis.dataset import requirement_means
 from agents.common import paths
 from analysis.data import (LEDGER, NOT_IN_FAMILY, _EXEC, _HEUR_AUCTION, _metrics, decline_rate, final_net,
                                              ok_runs, outcomes, _groups)

@@ -28,9 +28,8 @@ import math
 import statistics as st
 
 from analysis.data import estimates
-from analysis.dataset import corr
-from analysis.reference_sigma import debiased_sigma
-from analysis.in_market_sigma import requirement_means
+from analysis.dataset import corr, debiased_sigma, requirement_means
+
 
 # (agent, model, [(cell, group), ...])
 ROWS = [

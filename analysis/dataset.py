@@ -60,3 +60,22 @@ def share_between(field: str) -> float:
     allv = [r[field] for r in runs()]
     means = {k: st.mean(r[field] for r in g) for k, g in by_requirement().items()}
     return st.pvariance([means[r["requirement_id"]] for r in runs()]) / st.pvariance(allv)
+
+
+def requirement_means() -> Dict[str, float]:
+    """True cost of each requirement: the mean execution cost over its recorded runs."""
+    costs: Dict[str, List[float]] = collections.defaultdict(list)
+    for r in runs():
+        if r.get("requirement_id") and r.get("execution_cost_usd"):
+            costs[r["requirement_id"]].append(float(r["execution_cost_usd"]))
+    return {k: st.mean(v) for k, v in costs.items()}
+
+
+def debiased_sigma(residuals) -> float:
+    """RMS of the log residuals log(estimate / true cost) about their own mean.
+
+    A constant multiplicative bias is learnable from the agent's own history, so
+    it is not charged to the estimator.
+    """
+    offset = st.mean(residuals)
+    return math.sqrt(sum((r - offset) ** 2 for r in residuals) / len(residuals))
