@@ -58,7 +58,7 @@ class ServiceDescription:
     deadline: Optional[str] = None  # ISO 8601
     customer_endpoint: Optional[str] = None
     attachment_cids: Optional[List[str]] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         data = {
             "title": self.title,
@@ -81,7 +81,7 @@ class ServiceDescription:
 
 class IPFSClient:
     """Pin content to IPFS through Pinata and read it back through gateways."""
-    
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -90,7 +90,7 @@ class IPFSClient:
     ):
         """Credentials default to PINATA_JWT (preferred) or PINATA_API_KEY and PINATA_API_SECRET."""
         import os
-        
+
         self.jwt = jwt or os.getenv("PINATA_JWT")
         self.api_key = api_key or os.getenv("PINATA_API_KEY")
         self.api_secret = api_secret or os.getenv("PINATA_API_SECRET")
@@ -100,12 +100,12 @@ class IPFSClient:
             gateway += "/"
         self.gateway = gateway or None
         self.gateway_token = (os.getenv("PINATA_GATEWAY_TOKEN") or "").strip() or None
-        
+
         if not self.jwt and not (self.api_key and self.api_secret):
             logger.warning("Pinata credentials not configured. Upload operations will fail.")
-        
+
         logger.info("IPFSClient initialized")
-    
+
     def _get_auth_headers(self) -> Dict[str, str]:
         if self.jwt:
             return {"Authorization": f"Bearer {self.jwt}"}
@@ -116,7 +116,7 @@ class IPFSClient:
             }
         else:
             raise ValueError("Pinata credentials not configured")
-    
+
     async def pin_json(
         self,
         data: Dict[str, Any],
@@ -127,18 +127,18 @@ class IPFSClient:
         try:
             headers = self._get_auth_headers()
             headers["Content-Type"] = "application/json"
-            
+
             payload = {
                 "pinataContent": data
             }
-            
+
             if name or metadata:
                 payload["pinataMetadata"] = {}
                 if name:
                     payload["pinataMetadata"]["name"] = name
                 if metadata:
                     payload["pinataMetadata"]["keyvalues"] = metadata
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     PINATA_PIN_JSON_URL,
@@ -150,7 +150,7 @@ class IPFSClient:
                         result = await response.json()
                         cid = result.get("IpfsHash")
                         size = result.get("PinSize", 0)
-                        
+
                         logger.info(f"✅ Pinned JSON to IPFS: {cid}")
                         return IPFSUploadResult(
                             success=True,
@@ -165,11 +165,11 @@ class IPFSClient:
                             success=False,
                             error=f"Pinata API error: {response.status}"
                         )
-                        
+
         except Exception as e:
             logger.error(f"Error pinning JSON: {e}")
             return IPFSUploadResult(success=False, error=str(e))
-    
+
     async def pin_file(
         self,
         file_path: Union[str, Path],
@@ -179,23 +179,23 @@ class IPFSClient:
         """Pin a file; the pin is named after the file unless ``name`` is given."""
         try:
             file_path = Path(file_path)
-            
+
             if not file_path.exists():
                 return IPFSUploadResult(
                     success=False,
                     error=f"File not found: {file_path}"
                 )
-            
+
             file_size = file_path.stat().st_size
             if file_size > MAX_FILE_SIZE:
                 return IPFSUploadResult(
                     success=False,
                     error=f"File too large: {file_size} bytes (max {MAX_FILE_SIZE})"
                 )
-            
+
             file_name = name or file_path.name
             headers = self._get_auth_headers()
-            
+
             data = aiohttp.FormData()
             file_handle = open(file_path, 'rb')
             data.add_field(
@@ -204,7 +204,7 @@ class IPFSClient:
                 filename=file_name,
                 content_type='application/octet-stream'
             )
-            
+
             pinata_metadata = {"name": file_name}
             if metadata:
                 pinata_metadata["keyvalues"] = metadata
@@ -213,7 +213,7 @@ class IPFSClient:
                 json.dumps(pinata_metadata),
                 content_type='application/json'
             )
-            
+
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -226,7 +226,7 @@ class IPFSClient:
                             result = await response.json()
                             cid = result.get("IpfsHash")
                             size = result.get("PinSize", file_size)
-                            
+
                             logger.info(f"✅ Pinned file to IPFS: {file_name} -> {cid}")
                             return IPFSUploadResult(
                                 success=True,
@@ -243,11 +243,11 @@ class IPFSClient:
                             )
             finally:
                 file_handle.close()
-                        
+
         except Exception as e:
             logger.error(f"Error pinning file: {e}")
             return IPFSUploadResult(success=False, error=str(e))
-    
+
     async def pin_files(
         self,
         file_paths: List[Union[str, Path]],
@@ -257,14 +257,14 @@ class IPFSClient:
         if len(file_paths) > MAX_FILE_COUNT:
             logger.warning(f"Too many files ({len(file_paths)}), limiting to {MAX_FILE_COUNT}")
             file_paths = file_paths[:MAX_FILE_COUNT]
-        
+
         results = []
         for file_path in file_paths:
             result = await self.pin_file(file_path, metadata=metadata)
             results.append(result)
-        
+
         return results
-    
+
     async def fetch(
         self,
         cid: str,
@@ -315,10 +315,10 @@ class IPFSClient:
 
     async def fetch_json(self, cid: str, timeout: int = 30, retry_for: float = 0.0) -> Optional[Dict[str, Any]]:
         return await self.fetch(cid, as_json=True, timeout=timeout, retry_for=retry_for)
-    
+
     async def fetch_file(self, cid: str, timeout: int = 60, retry_for: float = 0.0) -> Optional[bytes]:
         return await self.fetch(cid, as_json=False, timeout=timeout, retry_for=retry_for)
-    
+
     async def download_file(
         self, cid: str, output_path: Union[str, Path], timeout: int = 60, retry_for: float = 0.0
     ) -> bool:
@@ -328,10 +328,10 @@ class IPFSClient:
             if data:
                 output_path = Path(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                
+
                 with open(output_path, 'wb') as f:
                     f.write(data)
-                
+
                 logger.info(f"✅ Downloaded {len(data)} bytes from {cid} to {output_path}")
                 return True
             else:
@@ -340,6 +340,6 @@ class IPFSClient:
         except Exception as e:
             logger.error(f"Error downloading file {cid}: {e}")
             return False
-    
+
 def create_ipfs_client() -> IPFSClient:
     return IPFSClient()

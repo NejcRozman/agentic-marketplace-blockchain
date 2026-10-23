@@ -25,7 +25,7 @@ class VisibleRequirement:
     source_pdf_names: Tuple[str, ...]
 
     def as_payload(self) -> Dict[str, Any]:
-        """The dict rendered into the prompt. No identifiers, by construction."""
+        """The dict rendered into the prompt; it contains no identifiers."""
         return {
             "title": self.title,
             "description": self.description,
@@ -42,10 +42,9 @@ def _pdf_stem(path: str) -> str:
 
 
 def visible_view(record: Mapping[str, Any], probe_id: str) -> VisibleRequirement:
-    """Project a ``requirements.jsonl`` record onto the allow-list.
+    """Project a dataset record onto the fields an estimator may see.
 
-    Reads only the named fields. A record carrying a new identifier field will
-    produce the same view it produced before that field existed.
+    Reads only the named fields, so new identifier fields in a record never reach the view.
     """
     inner = record.get("requirements") or {}
     prompts = tuple(str(p) for p in (inner.get("prompts") or []))
@@ -75,8 +74,8 @@ WIDE_PROMPT_THRESHOLD = 3
 
 
 def _stem_pattern(stem: str) -> re.Pattern:
-    # Word-ish boundaries that treat "_" as part of the token, so
-    # "Rozman_Emergence" does not match inside "Rozman_EmergenceExtra".
+    # Boundaries that treat "_" as part of the name, so "Rozman_Emergence" does not
+    # match inside "Rozman_EmergenceExtra".
     return re.compile(
         r"(?<![A-Za-z0-9_])" + re.escape(stem) + r"(?![A-Za-z0-9_])"
     )
@@ -92,11 +91,7 @@ def count_paper_mentions(prompt: str, pdf_names: Sequence[str]) -> int:
 
 
 def mechanical_features(visible: VisibleRequirement) -> Dict[str, float]:
-    """Features B1/B1b regress on, derived only from the visible view.
-
-    Identical inputs to the LLM's, so "the LLM beat B1b" cannot be an artefact
-    of the baseline being shown less.
-    """
+    """Countable features of the visible view, as the dataset collection records them."""
     mentions = [
         count_paper_mentions(prompt, visible.source_pdf_names)
         for prompt in visible.prompts

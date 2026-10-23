@@ -1,19 +1,8 @@
-"""
-Orchestrator for managing service execution in the agentic marketplace.
+"""The provider agent's process: bids through the BlockchainHandler and delivers the jobs it wins.
 
-The orchestrator coordinates between:
-- BlockchainHandler: Monitor auctions and handle blockchain interactions
-- ServiceExecutor: Execute the actual service
-- IPFS/P2P: File transfer
-
-Workflow:
-1. Periodically check for won auctions
-2. Fetch service requirements from IPFS
-3. Download input files (PDFs)
-4. Execute literature analysis service
-5. Deliver results to customer
-6. Complete service on blockchain
-7. Track costs and handle retries
+A won job is fetched (from IPFS in the live mode), executed with the
+ServiceExecutor or replayed from the dataset, delivered to the shared jobs
+directory, and completed on chain, which pays the provider.
 """
 
 import asyncio
@@ -42,20 +31,15 @@ IPFS_RETRY_SECONDS = 180
 
 
 class SampledReplayUnavailable(RuntimeError):
-    """The dataset has no recorded run for this (requirement, tier).
+    """The dataset has no recorded run for this (request, tier).
 
-    Distinct from a service *execution* failure on purpose. A live executor that
-    fails is a market event — the provider tried, delivered nothing, and should
-    be judged for it. A missing replay is not a market event: it means the run is
-    reading a dataset that cannot answer, and continuing would deliver a
-    fabricated result, collect the escrow, and record zero execution cost. That
-    is invented profit in the net balance, so it must stop the job
-    rather than "unblock the workflow".
+    Unlike a failed execution, which is a market event the provider is judged for,
+    continuing here would deliver a fabricated result, collect the escrow and record
+    no execution cost, so the job stops.
     """
 
 
 class JobStatus(str, Enum):
-    """Status of a service execution job."""
     WON = "won"
     FETCHING_REQUIREMENTS = "fetching_requirements"
     FETCHING_FILES = "fetching_files"
@@ -68,7 +52,7 @@ class JobStatus(str, Enum):
 
 @dataclass
 class Job:
-    """Represents a service execution job."""
+    """One won auction's job."""
     auction_id: int
     status: JobStatus
     started_at: datetime
@@ -84,9 +68,8 @@ class Job:
     error: Optional[str] = None
     effort_tier: Optional[str] = None
     service_metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert job to dictionary for logging/storage."""
         return {
             "auction_id": self.auction_id,
             "status": self.status.value,
@@ -100,22 +83,11 @@ class Job:
 
 
 class Orchestrator:
-    """
-    Orchestrator for coordinating service execution.
+    """Drives each won job from fetching its requirements to on-chain completion, with retries."""
 
-    This is a simple sequential controller (not ReAct-based) that:
-    - Monitors blockchain for won auctions
-    - Executes services using specialized agents
-    - Manages job lifecycle and state
-    - Handles retries and errors
-    """
-
-    #: Default polling interval for the main loop (seconds). The experiments override
-    #: it via `provider_monitor_interval`: at 5s a provider cannot reliably
-    #: catch a 5s reveal window, which is how bids get committed and then
-    #: forfeited. On a local chain mining every 1s, polling at 1s is within one
-    #: block of a WebSocket event subscription — the same reaction time for none
-    #: of the connection-lifecycle risk.
+    # Default polling interval of the main loop (seconds); the experiments set it via
+    # `provider_monitor_interval`. At 5 s a provider cannot reliably catch a 5 s
+    # reveal window; on a local chain mining every second, 1 s is enough.
     _DEFAULT_MONITOR_INTERVAL = 5.0
 
     def __init__(
@@ -125,15 +97,13 @@ class Orchestrator:
         reasoning_mode: Optional[str] = None,
         group_name: Optional[str] = None,
     ):
-        """Initialize the orchestrator."""
         self.config = config or Config()
         resolved_architecture = architecture or getattr(self.config, "architecture", "1")
         resolved_reasoning_mode = reasoning_mode or getattr(self.config, "reasoning_mode", "llm_react")
-        
-        # Create shared cost tracker for all components
+
+        # One cost tracker, shared by the handler and the executor.
         self.cost_tracker = CostTracker(agent_id=self.config.agent_id, config=self.config)
-        
-        # Initialize agents with shared cost tracker
+
         self.blockchain_handler = BlockchainHandler(
             self.config.agent_id,
             architecture=resolved_architecture,
@@ -158,21 +128,18 @@ class Orchestrator:
             "blockchain_llm": self.blockchain_handler.llm_model,
             "service_llm": self.service_executor.llm_model,
         }
-        
-        # Job tracking
+
         self.active_jobs: Dict[int, Job] = {}  # auction_id -> Job
         self.completed_jobs: List[Job] = []
-        
-        # Working directory for downloaded files, and where finished results are
-        # written for the consumer to read. Per-run via `AGENT_JOBS_DIR`; see
-        # `Config.jobs_directory` for why sharing it corrupts results.
+
+        # Where downloaded files and finished results live; per run, via `AGENT_JOBS_DIR`
+        # (see `Config.jobs_directory`).
         self.work_dir = Path(getattr(
             self.config, "jobs_directory",
             Path(__file__).parent.parent / "data" / "jobs",
         ))
         self.work_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Runtime state
+
         self.running = False
         self.monitor_interval = float(getattr(
             self.config, "provider_monitor_interval", self._DEFAULT_MONITOR_INTERVAL
@@ -182,17 +149,15 @@ class Orchestrator:
         #: check rejects a run with any.
         self.replay_failures = 0
         self._sampled_dataset_sampler: Optional[DatasetSampler] = None
-        
+
         logger.info(f"Orchestrator initialized for agent {self.config.agent_id}")
-    
+
     async def initialize(self):
-        """Initialize all components."""
         logger.info("Initializing orchestrator components...")
         await self.blockchain_handler.initialize()
         logger.info("✓ Orchestrator ready")
 
     def _get_sampled_dataset_sampler(self) -> DatasetSampler:
-        """Return cached dataset sampler for sampled execution mode."""
         if self._sampled_dataset_sampler is not None:
             return self._sampled_dataset_sampler
 
@@ -220,68 +185,54 @@ class Orchestrator:
             random_seed=resolved_seed,
         )
         return self._sampled_dataset_sampler
-    
+
     async def run(self):
-        """
-        Main orchestrator loop.
-        
-        Periodically:
-        1. Check for new won auctions
-        2. Process active jobs
-        3. Clean up completed jobs
-        """
+        """Main loop: pick up won auctions, drive active jobs, drop old completed ones."""
         self.running = True
         logger.info("🚀 Orchestrator started")
-        
+
         try:
             while self.running:
                 try:
-                    # Check for new won auctions
                     await self._check_won_auctions()
-                    
-                    # Process active jobs
+
                     await self._process_active_jobs()
-                    
-                    # Clean up old completed jobs
+
                     self._cleanup_completed_jobs()
-                    
+
                 except Exception as e:
                     logger.error(f"Error in orchestrator loop: {e}", exc_info=True)
-                
-                # Wait before next check
+
                 await asyncio.sleep(self.monitor_interval)
-                
+
         except asyncio.CancelledError:
             logger.info("Orchestrator cancelled")
         finally:
             self.running = False
             logger.info("Orchestrator stopped")
-    
+
     def stop(self):
-        """Stop the orchestrator."""
         logger.info("Stopping orchestrator...")
         self.running = False
-    
+
     async def _check_won_auctions(self):
-        """Check blockchain for newly won auctions."""
         try:
             result = await self.blockchain_handler.monitor_auctions()
             self.last_monitor_error = result.get("error")
             won_auctions = result.get("won_auctions", [])
-            
+
             for auction_details in won_auctions:
                 auction_id = auction_details["auction_id"]
                 if auction_id not in self.active_jobs:
                     await self._start_job(auction_details)
-                    
+
         except Exception as e:
             logger.error(f"Error checking won auctions: {e}")
-    
+
     async def _start_job(self, auction_details: Dict[str, Any]):
-        """Start a new job for a won auction."""
         auction_id = auction_details["auction_id"]
         logger.info(f"🎉 Starting job for won auction {auction_id}")
-        
+
         try:
             job = Job(
                 auction_id=auction_id,
@@ -291,21 +242,18 @@ class Orchestrator:
                 service_cid=auction_details["service_cid"],
                 effort_tier=auction_details["effort_tier"]
             )
-            
+
             self.active_jobs[auction_id] = job
             logger.info(f"✓ Job {auction_id} created: {job.to_dict()}")
-            
+
         except Exception as e:
             logger.error(f"Error starting job {auction_id}: {e}", exc_info=True)
-    
-    async def _process_active_jobs(self):
-        """Process all active jobs through their lifecycle.
 
-        Each job is driven to completion (or failure) in a single call rather
-        than advancing by one state per outer loop iteration.  The outer loop
-        still sleeps between calls, so new won-auctions are picked up promptly;
-        within a single job the steps are just awaited back-to-back, which is
-        safe because every step already uses await internally for any real I/O.
+    async def _process_active_jobs(self):
+        """Drive every active job to completion or failure.
+
+        Each job's steps are awaited back to back within one call; the main loop still
+        sleeps between calls, so new wins are picked up promptly.
         """
         for auction_id in list(self.active_jobs.keys()):
             job = self.active_jobs[auction_id]
@@ -330,8 +278,7 @@ class Orchestrator:
                         logger.info(f"✓ Job {auction_id} finished with status: {job.status.value}")
                         break
 
-                    # Guard: if a step left the status unchanged something
-                    # unexpected stalled — break to avoid an infinite loop.
+                    # A step that left the status unchanged has stalled; stop rather than loop.
                     if job.status == prev_status:
                         logger.warning(f"Job {auction_id} status unchanged at {job.status.value}, deferring")
                         break
@@ -348,11 +295,11 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Error processing job {auction_id}: {e}", exc_info=True)
                 await self._handle_job_error(job, str(e))
-    
+
     async def _fetch_requirements(self, job: Job):
-        """Fetch service requirements from IPFS."""
+        """The job's requirements: the dataset record when replaying, else the description on IPFS."""
         logger.info(f"📥 Fetching requirements for job {job.auction_id} from {job.service_cid}")
-        
+
         try:
             sampled_reference = DatasetSampler.parse_dataset_service_cid(job.service_cid)
             if sampled_reference is not None:
@@ -374,36 +321,30 @@ class Orchestrator:
                 job.status = JobStatus.FETCHING_REQUIREMENTS
                 return
 
-            # Fetch service description from IPFS
             # Freshly pinned content can take a while to become readable.
             requirements = await self.ipfs_client.fetch_json(job.service_cid, retry_for=IPFS_RETRY_SECONDS)
-            
+
             if not requirements:
                 raise Exception(f"Failed to fetch service requirements from IPFS: {job.service_cid}")
-            
+
             job.service_requirements = requirements
-            
-            # Extract prompts for literature analysis
+
             job.prompts = requirements.get("prompts", requirements.get("requirements", []))
-            
+
             logger.info(f"✓ Requirements fetched: {len(job.prompts)} prompts")
             job.status = JobStatus.FETCHING_REQUIREMENTS
-            
+
         except Exception as e:
             raise Exception(f"Failed to fetch requirements: {e}")
-    
+
     async def _fetch_files(self, job: Job):
-        """
-        Fetch input files (PDFs) for the service.
-        
-        Supports two formats:
-        1. input_files_cid: Single CID pointing to one file
-        2. input_files: Dict/list of {filename: cid} mappings
+        """Download the job's input files from IPFS.
+
+        Either ``input_files_cid`` (one file) or ``input_files`` (a dict or list of CIDs).
         """
         logger.info(f"📥 Fetching input files for job {job.auction_id}")
-        
+
         try:
-            # Create job-specific directory
             job.pdf_directory = self.work_dir / f"auction_{job.auction_id}"
             if job.pdf_directory.exists():
                 shutil.rmtree(job.pdf_directory)
@@ -413,11 +354,11 @@ class Orchestrator:
                 logger.info("✓ Sampled dataset mode: skipping input-file download for job %s", job.auction_id)
                 job.status = JobStatus.FETCHING_FILES
                 return
-            
+
             downloaded_count = 0
             source_pdfs = job.service_requirements.get("source_pdfs") or []
-            
-            # Check for single file CID
+
+            # One file
             input_cid = job.service_requirements.get("input_files_cid")
             if input_cid:
                 logger.info(f"Downloading file from IPFS: {input_cid}")
@@ -432,12 +373,12 @@ class Orchestrator:
                     downloaded_count += 1
                 else:
                     logger.warning(f"Failed to download file from {input_cid}")
-            
-            # Check for multiple files (dict or list of CIDs)
+
+            # Several files: a dict or a list of CIDs
             input_files = job.service_requirements.get("input_files")
             if input_files:
                 if isinstance(input_files, dict):
-                    # Format: {"file1.pdf": "Qm...", "file2.pdf": "Qm..."}
+                    # {"file1.pdf": "Qm...", ...}
                     for filename, cid in input_files.items():
                         logger.info(f"Downloading {filename} from IPFS: {cid}")
                         output_path = job.pdf_directory / filename
@@ -446,9 +387,9 @@ class Orchestrator:
                             downloaded_count += 1
                         else:
                             logger.warning(f"Failed to download {filename} from {cid}")
-                            
+
                 elif isinstance(input_files, list):
-                    # Format: ["Qm...", "Qm..."]
+                    # ["Qm...", ...]
                     for i, cid in enumerate(input_files):
                         logger.info(f"Downloading file {i+1} from IPFS: {cid}")
                         output_path = job.pdf_directory / f"input_{i+1}.pdf"
@@ -457,34 +398,33 @@ class Orchestrator:
                             downloaded_count += 1
                         else:
                             logger.warning(f"Failed to download file from {cid}")
-            
+
             if downloaded_count == 0 and not input_cid and not input_files:
                 logger.warning(f"No input files specified for job {job.auction_id}")
             elif downloaded_count > 0:
                 logger.info(f"✓ Downloaded {downloaded_count} files to {job.pdf_directory}")
-            
+
             job.status = JobStatus.FETCHING_FILES
-            
+
         except Exception as e:
             raise Exception(f"Failed to fetch files: {e}")
-    
+
     async def _execute_service(self, job: Job):
-        """Execute the service."""
+        """Execute the job with the ServiceExecutor at its effort tier."""
         logger.info(f"⚙️  Executing service for job {job.auction_id}")
-        
+
         tracking_started = False
         try:
             if (job.service_requirements or {}).get("execution_mode") == "sampled_dataset":
                 await self._execute_sampled_service(job)
                 return
 
-            # Track only service-execution LLM costs
+            # Only the execution's own LLM costs go into the execution window.
             if self.cost_tracker:
                 self.cost_tracker.start_service_execution(effort_tier=job.effort_tier)
                 tracking_started = True
 
-            # Execute service
-            # Only pass effort_tier if two_way coupling is enabled
+            # effort_tier is passed only with two-way coupling.
             kwargs = {
                 "pdf_directory": str(job.pdf_directory),
                 "prompts": job.prompts,
@@ -492,30 +432,30 @@ class Orchestrator:
             }
             if self.blockchain_handler.coupling_mode == "two_way":
                 kwargs["effort_tier"] = job.effort_tier
-            
+
             result = self.service_executor.perform_analysis(**kwargs)
-            
+
             if not result["success"]:
                 raise Exception(f"Service execution failed: {result.get('error')}")
-            
+
             job.result = result
 
             if self.cost_tracker and tracking_started:
                 job.llm_cost = self.cost_tracker.end_service_execution(effort_tier=job.effort_tier)
-            
+
             logger.info(f"✓ Service executed: {len(result['responses'])} responses generated")
             job.status = JobStatus.PROCESSING
-            
+
         except SampledReplayUnavailable:
             raise
         except Exception as e:
             if self.cost_tracker and tracking_started:
-                # Close tracking window even on failure (captures partial execution cost)
+                # Close the window even on failure, so a partial execution is still charged.
                 job.llm_cost = self.cost_tracker.end_service_execution(effort_tier=job.effort_tier)
             raise Exception(f"Failed to execute service: {e}")
 
     async def _execute_sampled_service(self, job: Job):
-        """Replay a sampled executor run instead of performing live RAG execution."""
+        """Replay a recorded execution from the dataset instead of executing."""
         service_requirements = job.service_requirements or {}
         dataset_id = service_requirements.get("dataset_id")
         requirement_id = service_requirements.get("requirement_id")
@@ -612,63 +552,51 @@ class Orchestrator:
             sampled_metadata.get("repeat_idx"),
             job.llm_cost,
         )
-    
+
     async def _deliver_result(self, job: Job):
-        """
-        Deliver results to customer.
-        
-        For v1: Save to local file
-        For v2: Use A2A protocol to POST to customer endpoint
-        """
+        """Write the result to the shared jobs directory, where the consumer reads it."""
         logger.info(f"📤 Delivering result for job {job.auction_id}")
-        
+
         try:
-            # For v1: Save result to file
             result_file = job.pdf_directory / "result.json"
             with open(result_file, "w") as f:
                 json.dump(job.result, f, indent=2, ensure_ascii=False)
-            
+
             logger.info(f"✓ Result saved to {result_file}")
-            
-            # TODO: For v2, send via A2A protocol
-            # customer_endpoint = job.service_requirements.get("customer_endpoint")
-            # if customer_endpoint:
-            #     await self._send_via_a2a(customer_endpoint, job.result)
-            
+
             job.status = JobStatus.DELIVERING
-            
+
         except Exception as e:
             raise Exception(f"Failed to deliver result: {e}")
-    
+
     async def _complete_service(self, job: Job):
-        """Complete the service on blockchain."""
+        """Complete the job on chain, which releases the payment."""
         logger.info(f"✅ Completing service for job {job.auction_id}")
-        
+
         try:
-            # Call blockchain handler to complete service
             completion_result = await self.blockchain_handler.complete_service(
                 auction_id=job.auction_id,
                 client_address=job.buyer_address
             )
-            
+
             if completion_result.get("error"):
                 raise Exception(f"Blockchain completion failed: {completion_result['error']}")
-            
+
             logger.info(f"✓ Service completed on-chain: tx={completion_result.get('tx_hash')}")
             logger.info(f"✓ Feedback auth: {completion_result.get('feedback_auth')}")
-            
+
             job.status = JobStatus.COMPLETED
-            
+
         except Exception as e:
             raise Exception(f"Failed to complete service: {e}")
-    
+
     async def _handle_job_error(self, job: Job, error: str):
-        """Handle job errors with retry logic."""
+        """Retry the failed step, up to the job's retry limit."""
         job.error = error
         job.retry_count += 1
-        
+
         logger.warning(f"⚠️  Job {job.auction_id} error (attempt {job.retry_count}/{job.max_retries}): {error}")
-        
+
         if job.retry_count >= job.max_retries:
             if job.status == JobStatus.FETCHING_FILES:
                 logger.error(
@@ -681,14 +609,13 @@ class Orchestrator:
             logger.error(f"❌ Job {job.auction_id} failed after {job.retry_count} attempts")
             job.status = JobStatus.FAILED
         else:
-            # Retry: Reset status to previous step
             logger.info(f"🔄 Retrying job {job.auction_id}...")
-            # Keep current status to retry the same step
+            # Keep the status, so the same step is retried.
 
     def _continue_after_service_failure(self, job: Job):
-        """Create a synthetic failed result and continue pipeline to on-chain completion.
+        """Deliver a failed result and complete the job on chain anyway.
 
-        This keeps the marketplace flow moving even when local service execution repeatedly fails.
+        The consumer then rates the failure, so a failed delivery is judged like any other.
         """
         failure_result = {
             "success": False,
@@ -700,37 +627,25 @@ class Orchestrator:
             "failure_timestamp": datetime.now().isoformat()
         }
 
-        # Persist failure outcome so downstream analysis can treat this as poor delivery quality.
+        # Recorded, so the analysis can treat it as a poor delivery.
         job.result = failure_result
         job.status = JobStatus.PROCESSING
-    
+
     def _cleanup_completed_jobs(self, max_completed: int = 100):
-        """Clean up old completed jobs to prevent memory bloat."""
         if len(self.completed_jobs) > max_completed:
             removed = len(self.completed_jobs) - max_completed
             self.completed_jobs = self.completed_jobs[-max_completed:]
             logger.debug(f"Cleaned up {removed} old completed jobs")
-    
+
     def get_status(self) -> Dict[str, Any]:
-        """Get current orchestrator status."""
+        """The status the runner and the analysis read."""
         cost_breakdown = self.cost_tracker.get_cost_breakdown()
 
-        # Jobs in DELIVERING state have had their execution cost charged but have not yet
-        # received revenue (the completeService tx is still in flight).  Adding these costs
-        # back prevents a transient balance dip in status snapshots that are written between
-        # cost recording and revenue recording inside wait_for_transaction.
-        #
-        # ⚠️ The revenue check is load-bearing, not defensive. `DELIVERING` does not
-        # end when revenue is booked: the winning bid is recorded inside a LangGraph
-        # node (`_record_completion_revenue`), while `job.status = COMPLETED` is set
-        # only after `graph.ainvoke` returns. The whole tail of that traversal is
-        # `await` points, and the status writer is a coroutine on the same loop
-        # (`await asyncio.sleep(10)` in `main`), so it can and eventually will
-        # observe a job that is still DELIVERING *and* already paid. Compensating
-        # then reports `net + revenue` — overstating by exactly the execution cost.
-        #
-        # `financials.net_balance` from this status file is the outcome the
-        # analysis reads.
+        # A job in DELIVERING has been charged its execution cost but may not have been
+        # paid yet (completeService is in flight), so its cost is added back to avoid a
+        # transient dip in the status. Only while the revenue is not yet booked: the
+        # status writer runs on the same event loop and can see a job that is still
+        # DELIVERING but already paid, which would otherwise overstate the net balance.
         pending_execution_cost = sum(
             job.llm_cost
             for job in self.active_jobs.values()
@@ -755,29 +670,18 @@ class Orchestrator:
             },
             "jobs": {
                 "active": [job.to_dict() for job in self.active_jobs.values()],
-                "completed": [job.to_dict() for job in self.completed_jobs[-10:]]  # Last 10
+                "completed": [job.to_dict() for job in self.completed_jobs[-10:]]  # the last 10
             }
         }
 
 
 def _install_graceful_shutdown(orchestrator, status_file, get_status):
-    """Write a final status on SIGTERM instead of dying mid-flight.
+    """Write a final status on SIGTERM.
 
-    The runner stops agents with SIGTERM and waits 5s before SIGKILL. Python's
-    default SIGTERM action terminates the process without unwinding, so the
-    ``finally`` that writes the closing status never ran: the newest status file
-    was whatever the 10-second periodic loop last wrote, up to ten seconds
-    stale. A job settling inside that window was missing from
-    ``completed_jobs`` and its revenue from ``net_balance`` — seed 1008's H arm
-    reported $0.1566 against a true $0.1850, and 3 of 20 arm-runs were wrong by
-    up to $0.047.
-
-    That matters beyond bookkeeping: every profit analysis reads these files
-    (``experiments/analysis/compare_block_e.py`` and friends), so the headline
-    numbers were being taken from a stale snapshot.
-
-    Raising ``KeyboardInterrupt`` reuses the shutdown path that already exists
-    rather than adding a second one.
+    The runner stops agents with SIGTERM and waits 5 s before SIGKILL; Python's default
+    action would terminate without running the ``finally`` that writes the closing
+    status, leaving a status up to ten seconds stale, without the jobs that settled
+    meanwhile. Raising ``KeyboardInterrupt`` reuses the existing shutdown path.
     """
     import signal as _signal
 
@@ -789,14 +693,12 @@ def _install_graceful_shutdown(orchestrator, status_file, get_status):
         try:
             _signal.signal(sig, _on_term)
         except (ValueError, OSError):
-            # Not on the main thread, or the platform disallows it: the periodic
-            # write still runs, so this degrades to the previous behaviour.
+            # Not on the main thread, or the platform disallows it: the periodic status write
+            # still runs.
             logger.debug("Could not install handler for %s", sig)
 
 
 async def main(args):
-    """Run the orchestrator with CLI arguments."""
-    # Build runtime config from environment and CLI overrides
     runtime_config = Config()
 
     if args.agent_id:
@@ -835,31 +737,27 @@ async def main(args):
     )
 
     await orchestrator.initialize()
-    
-    # Create status file path if provided
+
     status_file = Path(args.status_file) if args.status_file else None
 
     _install_graceful_shutdown(orchestrator, status_file, orchestrator.get_status)
-    
+
     try:
-        # Write initial status
         if status_file:
             with open(status_file, 'w') as f:
                 json.dump(orchestrator.get_status(), f)
-        
-        # Start orchestrator main loop
+
         orchestrator_task = asyncio.create_task(orchestrator.run())
-        
-        # Periodically write status while orchestrator is running
+
         while not orchestrator_task.done():
             if status_file:
                 with open(status_file, 'w') as f:
                     json.dump(orchestrator.get_status(), f)
-            await asyncio.sleep(10)  # Update status every 10 seconds
-        
-        # Await the orchestrator task to catch any exceptions
+            await asyncio.sleep(10)  # status every 10 seconds
+
+        # Await the task, so its exceptions surface.
         await orchestrator_task
-            
+
     except KeyboardInterrupt:
         logger.info("Received interrupt signal")
     finally:
@@ -900,13 +798,12 @@ if __name__ == "__main__":
     parser.add_argument("--heuristic-bid-tick-usd", type=float, help="Bid tick size for legacy strategies")
     parser.add_argument("--status-file", type=str, help="Path to write status JSON file")
     parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    
+
     args = parser.parse_args()
-    
-    # Configure logging
+
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-    
+
     asyncio.run(main(args))

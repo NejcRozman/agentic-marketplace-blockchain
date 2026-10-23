@@ -106,13 +106,13 @@ analyst answering these prompts has the full papers and will search them."""
 
 class ServiceGenerator:
     """Generates literature-review requests from one or more paper abstracts."""
-    
+
     def __init__(self, config: Config):
         self.config = config
         self.ipfs_client = IPFSClient()
         self.processed_pdfs: Set[str] = set()  # PDFs already used in this session
         self.service_generation_timeout = max(1, int(getattr(config, "service_generation_timeout", 180)))
-        
+
         # The model comes from the config, so it is recorded per collection.
         self.model_name = str(
             getattr(config, "service_generation_model", None) or "openai/gpt-oss-20b"
@@ -194,7 +194,7 @@ class ServiceGenerator:
         self.generation_input_tokens += input_tokens
         self.generation_output_tokens += output_tokens
         return {"input_tokens": input_tokens, "output_tokens": output_tokens}
-    
+
     async def generate_services_from_pdfs(
         self,
         pdf_dir: Path,
@@ -212,13 +212,13 @@ class ServiceGenerator:
         Returns the ``processed``, ``skipped`` and ``failed`` jobs.
         """
         logger.info(f"Generating services from PDFs in {pdf_dir}")
-        
+
         pdf_paths = sorted(pdf_dir.glob("*.pdf"))
-        
+
         if not pdf_paths:
             logger.warning(f"No PDF files found in {pdf_dir}")
             return {"processed": [], "skipped": [], "failed": []}
-        
+
         logger.info(f"Found {len(pdf_paths)} PDF files")
 
         configured_pdfs_per_service = int(
@@ -259,11 +259,11 @@ class ServiceGenerator:
             resolved_sampling_iterations,
             resolved_sampling_seed,
         )
-        
+
         processed = []
         skipped = []
         failed = []
-        
+
         if configured_sampling_mode == "random_iterations":
             if skip_processed and self.processed_pdfs:
                 logger.info(
@@ -399,18 +399,18 @@ class ServiceGenerator:
                     else:
                         failed.append({"pdf_names": group_names, "error": str(e)})
                     continue
-        
+
         logger.info(
             f"✓ Results: {len(processed)} processed, "
             f"{len(skipped)} skipped, {len(failed)} failed"
         )
-        
+
         return {
             "processed": processed,
             "skipped": skipped,
             "failed": failed
         }
-    
+
     async def _generate_service_for_pdf_group(
         self,
         pdf_paths: List[Path]
@@ -512,26 +512,26 @@ class ServiceGenerator:
             "title": service_desc["title"],
             "prompts": prompts
         }
-    
+
     def _read_abstract(self, pdf_path: Path) -> str:
         """The abstract in the ``.txt`` file next to a PDF."""
         abstract_path = pdf_path.with_suffix('.txt')
-        
+
         if not abstract_path.exists():
             raise FileNotFoundError(
                 f"Abstract file not found: {abstract_path}. "
                 f"Each PDF must have a corresponding .txt file with the abstract."
             )
-        
+
         with open(abstract_path, 'r', encoding='utf-8') as f:
             abstract = f.read().strip()
-        
+
         if not abstract:
             raise ValueError(f"Abstract file is empty: {abstract_path}")
-        
+
         logger.info(f"  Read abstract ({len(abstract)} chars)")
         return abstract
-    
+
     @staticmethod
     def _normalize_prompt_source_ids(prompts: List[str], source_ids: List[str]) -> List[str]:
         """Replace "Paper N" references with the source ids."""
@@ -644,7 +644,7 @@ Abstract:
 {abstract}
 
 Generate 5 specific questions for this paper's literature review:"""
-        
+
         try:
             response = self.model.invoke(
                 f"{system_prompt}\n\n{user_prompt}"
@@ -652,24 +652,24 @@ Generate 5 specific questions for this paper's literature review:"""
             self._record_model_usage(response)
 
             response_text = response.content.strip()
-            
+
             # Strip markdown code fences.
             if response_text.startswith("```"):
                 response_text = response_text.split("```")[1]
                 if response_text.startswith("json"):
                     response_text = response_text[4:]
                 response_text = response_text.strip()
-            
+
             prompts = json.loads(response_text)
-            
+
             if not isinstance(prompts, list) or not prompts:
                 raise ValueError("LLM did not return a valid list of prompts")
-            
+
             prompts = self._normalize_prompt_source_ids([str(p) for p in prompts], source_ids)
-            
+
             logger.info(f"  Generated {len(prompts)} prompts")
             return prompts
-            
+
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LLM response as JSON: {e}")
             logger.error(f"Response: {response.content}")
@@ -677,10 +677,8 @@ Generate 5 specific questions for this paper's literature review:"""
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
             return self._get_default_prompts(multi_paper=multi_paper, source_ids=source_ids)
-    
-    
-    # --- Plan-driven prompt generation (dataset collection) ---
 
+    # --- Plan-driven prompt generation (dataset collection) ---
     @staticmethod
     def _assign_prompt_sources(
         source_ids: List[str],
@@ -1062,4 +1060,3 @@ Generate the {prompt_count} prompts at {depth} depth:"""
             f"What are the limitations and potential areas for future work in {source_id}?",
             f"What are the broader implications or applications of the research in {source_id}?"
         ]
-    

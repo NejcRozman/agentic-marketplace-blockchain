@@ -1,11 +1,8 @@
-"""
-BlockchainHandler - Agentic handler for blockchain operations.
+"""The provider's chain-facing agent: gathers market state, decides bids, commits and reveals them, completes won jobs.
 
-This agent uses LangGraph to handle blockchain operations:
-- Complete service path: Deterministic workflow for completing auctions
-- Monitor path: Heuristic or ReAct agent with tools for intelligent bidding decisions
-
-Built with LangGraph for agentic reasoning and decision-making.
+A LangGraph workflow with two paths: ``monitor`` (gather state, reveal pending
+bids, decide new bids with a heuristic policy or an LLM) and ``complete_service``
+(sign the feedbackAuth and complete the job on chain).
 """
 
 import asyncio
@@ -70,11 +67,9 @@ logger = logging.getLogger(__name__)
 
 
 def _auction_rw(auction: Dict[str, Any], default: int = 50) -> int:
-    """Reputation weight from an auction dict, preserving a legitimate 0.
+    """An auction's reputation weight, keeping a legitimate 0.
 
-    `auction.get("reputation_weight", 50) or 50` silently turned rw=0 into
-    rw=50, because 0 is falsy. rw=0 is a real setting (award on price alone),
-    so absent/None must be distinguished from zero.
+    ``get(..., 50) or 50`` would turn w = 0 (award on price alone) into 50.
     """
     value = auction.get("reputation_weight")
     if value is None:
@@ -83,147 +78,87 @@ def _auction_rw(auction: Dict[str, Any], default: int = 50) -> int:
 
 
 class AgentState(TypedDict):
+    """State of one workflow run: control fields, the current market, and the agent's history.
+
+    Not every field is populated; the heuristic path, for instance, leaves the LLM fields empty.
     """
-    State for blockchain agent workflow.
-    
-    Organized by temporal dimension (current/history/future) and parameter type
-    (performance/market/decision). Not all fields need to be populated - simpler
-    architectures can leave history/future fields empty without affecting reasoning.
-    """
-    
-    # ============================================================================
-    # WORKFLOW CONTROL (always populated)
-    # ============================================================================
+
+    # --- Workflow control ---
     agent_id: int
     action: str  # "complete_service" or "monitor"
-    
-    # Transaction results
+
     tx_hash: Optional[str]
     error: Optional[str]
     messages: List[Any]
-    
-    # ============================================================================
-    # CURRENT STATE - Present moment snapshot
-    # ============================================================================
 
-    # Active auctions and market conditions
-    eligible_active_auctions: List[Dict[str, Any]]  # Auctions we can bid on (BC + IPFS data)
-    won_auctions: List[Dict[str, Any]]  # Auctions we won (for service completion) 
+    # --- Current market ---
+    eligible_active_auctions: List[Dict[str, Any]]  # chain data plus the job description
+    won_auctions: List[Dict[str, Any]]
 
-    # Current reputation context
-    competitors_reputation: List[Dict[str, Any]]  # All other agents bidding in auctions with their reputation
-    agent_reputation: Dict[str, Any]  # Agent's current reputation score and feedback count
+    competitors_reputation: List[Dict[str, Any]]  # competitors' reputations
+    agent_reputation: Dict[str, Any]  # own rating and feedback count
 
-    # Agent's current performance context
-    estimated_service_cost: Optional[float]  # Basic cost estimate exposed to isolated architectures (USD)
-    estimated_execution_cost: Optional[float]  # Estimated direct execution cost per completed service (USD)
-    non_execution_cost_per_participation: Optional[float]  # Historical non-execution cost per auction participation (USD)
-    unrecovered_overhead_balance: Optional[float]  # Historical non-execution overhead not yet repaid by service margin (USD)
-    current_balance: float  # Current net balance (revenue - costs, USD)
-    
-    # Results of current decision cycle
-    bids_placed: List[Dict[str, Any]]  # Bids submitted this invocation
-    reveals: List[Dict[str, Any]]  # Sealed-bid reveals attempted this invocation
+    estimated_service_cost: Optional[float]  # USD; architecture 1 only
+    estimated_execution_cost: Optional[float]  # USD per completed job
+    non_execution_cost_per_participation: Optional[float]  # USD per auction entered
+    unrecovered_overhead_balance: Optional[float]  # USD, not yet repaid by margin
+    current_balance: float  # USD, revenue minus costs
 
-    # Service completion workflow (only for complete_service action)
+    bids_placed: List[Dict[str, Any]]  # this cycle
+    reveals: List[Dict[str, Any]]  # this cycle
+
+    # complete_service only
     auction_id: Optional[int]
     client_address: Optional[str]
     feedback_auth: Optional[bytes]
-    
-    # ============================================================================
-    # HISTORY STATE - Past observations and outcomes
-    # ============================================================================
-    
-    # --- History Performance Parameters ---
-    past_execution_costs: List[float]  # Historical service execution costs (USD, chronological)
-    effort_level_execution_costs: Dict[str, float]  # Per-effort execution cost estimates (USD)
-    effort_level_execution_counts: Dict[str, int]  # Completed service counts per effort level
-    effort_level_quality_stats: Dict[str, Dict[str, float]]  # Per-effort quality stats (avg/variance/count)
-    bids_placed_count: Optional[int]  # On-chain commit attempts that succeeded (for win-rate tracking)
-    wins_count: Optional[int]  # Auctions won and services completed
-    win_rate: Optional[float]  # wins_count / bids_placed_count; None until first bid
-    avg_gross_margin_per_win_usd: Optional[float]  # (revenue - execution) / wins on won auctions; None until first win
-    llm_margin_bound_min: Optional[float]  # Prompt-only bid-margin floor shared with heuristic agents (fraction)
-    llm_margin_bound_max: Optional[float]  # Prompt-only bid-margin ceiling shared with heuristic agents (fraction)
-    llm_last_margin_pct: Optional[float]  # R1: margin % committed on the most recent bid; None until first commit
-    llm_outcome_history: Optional[List[Dict[str, Any]]]  # R1: full decision->outcome record of own past bids
-    llm_strategy_memo: Optional[str]  # R2: self-edited strategy memo, revised before each decision
-    # past_auctions: Optional[List[Dict[str, Any]]]  # Last N auctions participated
-    # past_reputation_trajectory: Optional[List[float]]  # Reputation over time
-    
-    # --- History Market Parameters ---
-    # past_market_prices: Optional[List[float]]  # Historical winning bids
-    # past_competition_levels: Optional[List[float]]  # Competition over time
-    
-    # --- History Decision Parameters ---
-    # past_bidding_strategy: Optional[List[str]]  # What strategies were used
-    # past_bid_outcomes: Optional[List[Dict[str, Any]]]  # Win/loss with details
-    
-    # ============================================================================
-    # FUTURE STATE - Predictions and forward-looking parameters
-    # ============================================================================
-    
-    # --- Future Market Parameters ---
-    # predicted_competition: Optional[float]  # Expected future competition
-    # predicted_price_trend: Optional[str]  # "increasing", "stable", "decreasing"
-    
-    # --- Future Performance Parameters ---
-    # expected_reputation_change: Optional[float]  # If we win/lose this auction
-    # expected_capacity_utilization: Optional[float]  # Future workload
-    
-    # --- Future Decision Parameters ---
-    # recommended_bid_range: Optional[Dict[str, float]]  # Min/max profitable bids
-    # risk_assessment: Optional[str]  # "low", "medium", "high"
+
+    # --- History ---
+    past_execution_costs: List[float]  # USD, oldest first
+    effort_level_execution_costs: Dict[str, float]  # USD per tier
+    effort_level_execution_counts: Dict[str, int]  # per tier
+    effort_level_quality_stats: Dict[str, Dict[str, float]]  # mean, variance and count per tier
+    bids_placed_count: Optional[int]  # bids committed on chain
+    wins_count: Optional[int]  # jobs won and completed
+    win_rate: Optional[float]  # None until the first bid
+    avg_gross_margin_per_win_usd: Optional[float]  # None until the first win
+    llm_margin_bound_min: Optional[float]  # LLM-Band and later: margin band (fraction)
+    llm_margin_bound_max: Optional[float]
+    llm_last_margin_pct: Optional[float]  # margin of the last committed bid
+    llm_outcome_history: Optional[List[Dict[str, Any]]]  # LLM-History
+    llm_strategy_memo: Optional[str]  # LLM-Reflect
 
 
 class BlockchainHandler:
-    """
-    Agentic blockchain handler using LangGraph.
-    
-    - complete_service: Deterministic path for service completion
-    - monitor: Heuristic or ReAct agent for intelligent bidding decisions
-    """
+    """The provider's chain-facing agent (LangGraph): bidding on the ``monitor`` path, delivery on ``complete_service``."""
 
-    # Keep weight semantics in percent (0-100) while increasing score precision.
+    # Scores are computed in percent (0-100) times this, for precision.
     SCORE_PRECISION = 10_000
     WEIGHT_SCALE = 100
-    # Max random pre-reasoning delay (seconds) to desync providers detecting the same new auction.
+    # Maximum random pre-reasoning delay (seconds), to desynchronise providers.
     _BID_JITTER_MAX_SECONDS = 3.0
 
     # The jitter must never eat the commit window: a fixed 0-3 s delay is 30% of
     # a 10 s phase, enough to push every bid past the freshness gate below.
     _JITTER_WINDOW_FRACTION = 0.15
 
-    # Max random delay before revealing, mirroring the commit jitter above.
-    #
-    # The commit jitter desynchronises the agents for the phase where ordering
-    # does not matter, and left untouched the one phase where it does. Two
-    # identical strategies compute an identical first bid, both wait on the same
-    # on-chain deadline (`getAuctionPhase` flipping to Reveal), and fire within a
-    # millisecond of each other into the same one-second Anvil block — so
-    # `ReverseAuction.revealBid`'s strict `score >` tie-break is decided by
-    # mempool arrival order, i.e. OS scheduling. Measured over six identical
-    # re-runs of seed 1007, that coin flip selected between two attractors whose
-    # profit outcomes differed by $0.44.
-    #
-    # Drawn from the agent's own seeded RNG, so reveal order becomes a
-    # reproducible function of (run_seed, agent_id) rather than a race.
+    # Maximum random delay before revealing. Two identical strategies compute the same
+    # bid, wait on the same on-chain deadline and would reveal in the same block, so
+    # the contract's strict tie-break would be decided by mempool arrival order, that
+    # is by OS scheduling. Drawn from the agent's seeded RNG, the reveal order is a
+    # reproducible function of (run_seed, agent_id).
     _REVEAL_JITTER_MAX_SECONDS = 1.5
 
     #: Keeps the reveal stream from colliding with any agent's bidding stream.
     _REVEAL_RNG_STREAM_OFFSET = 1_000_000
 
-    # A commit sent with less than this left is likely to be mined after the
-    # phase closes. Measured on 160 real commits against a *forked* chain:
-    # median 0.59s, p95 1.17s, max 5.56s from send to confirmation.
-    #
-    # Short commit windows need a smaller value via config: a 10 s gate on a 10 s
-    # window can never pass, so every auction would be skipped.
+    # A commit sent with less than this left is likely to be mined after the phase
+    # closes. Short commit windows need a smaller value via config: a 10 s gate on a
+    # 10 s window never passes.
     _DEFAULT_BID_FRESHNESS_MIN_SECONDS = 10.0
-    
+
     def __init__(
-        self, 
-        agent_id: int, 
+        self,
+        agent_id: int,
         blockchain_client: Optional[BlockchainClient] = None,
         architecture: Optional[str] = None,
         system_prompt: Optional[str] = None,
@@ -234,34 +169,20 @@ class BlockchainHandler:
         reasoning_mode: Optional[str] = None,
         cost_tracker: Optional[CostTracker] = None
     ):
-        """
-        Initialize the blockchain handler agent.
-        
-        Args:
-            agent_id: The agent's ID
-            blockchain_client: Optional blockchain client instance
-            architecture: Architecture name. If None, uses config.architecture
-            system_prompt: System prompt for the ReAct agent (if None, uses architecture's template)
-            llm_temperature: LLM temperature (if None, uses architecture's default)
-            llm_base_url: LLM API base URL (default: from config)
-            llm_api_key: LLM API key (default: from config)
-            enabled_tools: List of tool names to enable (if None, uses architecture's tools)
-            reasoning_mode: "heuristic" or "llm_react" (if None, uses architecture's mode)
-            cost_tracker: Optional CostTracker instance (creates new if None)
+        """Defaults come from the architecture (``architecture`` or ``config.architecture``).
+
+        ``reasoning_mode`` is "heuristic" or "llm_react"; ``system_prompt``, ``enabled_tools``
+        and the LLM settings override the architecture's.
         """
         self.agent_id = agent_id
         self.client = blockchain_client or BlockchainClient()
         self.config = config
         self.initial_reputation_default = self.config.initial_reputation_default
 
-        # This agent's private RNG, derived from the run seed. Every controllable draw
-        # below goes through it — never through the `random` module, whose global
-        # generator is shared across agents and unstable under async interleaving.
+        # This agent's private RNG, derived from the run seed; every random draw below
+        # goes through it.
         self._rng = agent_rng(getattr(self.config, "run_seed", None), agent_id)
-        # Separate stream for the reveal jitter: drawing it from `_rng` would
-        # interleave with the bidding draws and change bids that have nothing to
-        # do with revealing. The offset keeps the two streams distinct while
-        # staying a pure function of the run seed.
+        # A separate stream for the reveal jitter, so it does not shift the bidding draws.
         self._reveal_rng = agent_rng(
             getattr(self.config, "run_seed", None),
             (agent_id or 0) + self._REVEAL_RNG_STREAM_OFFSET,
@@ -274,29 +195,24 @@ class BlockchainHandler:
         #: Commits that were mined after their commit phase closed; the campaign
         #: check rejects a run with any.
         self.late_commits = 0
-        #: Commitments abandoned because the reveal window would have closed
-        #: first. Each one is a forfeited auction, so this must also be zero.
+        #: Commitments abandoned because the reveal window would close first; each is a
+        #: forfeited auction.
         self.missed_reveals = 0
         self._forfeited_commitments: set = set()
 
-        #: Auctions known to be finished. Monotonic: an auction never returns
-        #: from settled to active, so this only ever grows and is safe to trust.
+        #: Auctions known to be finished; an auction never becomes active again.
         self._settled_auctions: set = set()
 
-        
-        # Load architecture configuration
         arch_name = architecture or self.config.architecture
         self.arch_config = get_architecture(arch_name)
-        
-        # Apply architecture settings (can be overridden by explicit kwargs)
+
+        # Architecture defaults, overridable by explicit arguments
         self.reasoning_mode = reasoning_mode or self.arch_config.reasoning_mode
         if self.reasoning_mode not in ["deterministic", "heuristic", "llm_react", "llm_strategic"]:
             raise ValueError(f"Invalid reasoning_mode: {self.reasoning_mode}")
-        
-        # System prompt configuration
+
         self.system_prompt = system_prompt
-        
-        # LLM configuration (with architecture defaults, overridable per-run)
+
         self.llm_model = getattr(self.config, "blockchain_llm_override", None) or self.arch_config.blockchain_llm
         if llm_temperature is not None:
             self.llm_temperature = llm_temperature
@@ -318,9 +234,8 @@ class BlockchainHandler:
                 f"expected one of {cost_estimators.ESTIMATOR_MODES}"
             )
         self.cost_estimator_mode = estimator_mode
-        #: Auctions whose winning bid has already been booked. Completion is
-        #: retried on failure and may be re-entered after the chain has already
-        #: settled, so revenue is keyed by auction rather than by attempt.
+        #: Auctions whose winning bid has been booked. Completion may be retried after
+        #: the chain has settled, so revenue is keyed by auction, not by attempt.
         self._revenue_recorded: set = set()
         if estimator_mode == "none":
             self._cost_estimator = None
@@ -332,9 +247,7 @@ class BlockchainHandler:
                 api_key=self.llm_api_key or "",
             )
         elif estimator_mode == "oracle":
-            # A bound, not a competitor: it reads the dataset's own ground truth.
-            # Pointed at the run's sampled dataset so an oracle can never be fed
-            # truth from a dataset the market is not drawing from.
+            # A bound, not a competitor: it reads the true costs from the run's own dataset.
             self._cost_estimator = cost_estimators.OracleCostEstimator(
                 dataset_dir=str(getattr(self.config, "sampled_dataset_dir", "") or "") or None
             )
@@ -350,25 +263,21 @@ class BlockchainHandler:
             temperature_override=self.llm_temperature,
             seed_override=getattr(self.config, "llm_sampling_seed", None),
         )
-        
-        # Tools configuration (from architecture)
+
         self.enabled_tools = enabled_tools or self.arch_config.enabled_tools
-        
-        # Store coupling mode from architecture (used in state population)
+
         self.coupling_mode = self.arch_config.coupling_mode
-        
+
         self.contracts_loaded = False
         self.reverse_auction_contract = None
         self.identity_registry_contract = None
         self.reputation_registry_contract = None
-        
-        # Cost tracking (create new if not provided)
+
         self.cost_tracker = cost_tracker or CostTracker(agent_id=agent_id, config=self.config)
-        
-        # Block tracking - persists across invocations
+
+        # Last block read; kept across cycles
         self._last_processed_block: int = 0
-        
-        # Bids placed tracker (for ReAct tool results)
+
         self._bids_placed: List[Dict[str, Any]] = []
         self._react_stop_after_bid_attempt: bool = False
         self._bid_attempt_stats: Dict[str, int] = {
@@ -384,34 +293,31 @@ class BlockchainHandler:
         # a win twice.
         self._own_winning_bids_micro: Dict[int, int] = {}
 
-        # R1 episodic memory: margin % (over total cost basis) committed on the most recent
-        # successful bid; surfaced next cycle only when llm_last_margin_enabled. None until first commit.
+        # The margin of the most recent committed bid (shown only when
+        # llm_last_margin_enabled); None until the first commit.
         self._llm_last_margin_pct: Optional[float] = None
 
-        # R1 full episodic memory: one decision->outcome record per committed bid, surfaced only
-        # when llm_outcome_history_enabled. Entries start as "pending" and are resolved to
-        # won/lost as AuctionEnded events arrive; reputation-after is filled in once the win's
-        # feedback lands on-chain. _llm_outcome_by_auction indexes into the same dicts.
+        # LLM-History: one decision-outcome record per committed bid. Records start as
+        # "pending" and are resolved as AuctionEnded events arrive; a win's reputation
+        # effect is filled in once its feedback is on chain. _llm_outcome_by_auction
+        # indexes the same records.
         self._llm_outcome_history: List[Dict[str, Any]] = []
         self._llm_outcome_by_auction: Dict[int, Dict[str, Any]] = {}
         self._recently_ended_auction_ids: List[int] = []
 
-        # R2 reflection: a single self-edited strategy memo, revised before every bidding
-        # decision. Independent of the R1 flag — reflection reads the outcome record internally
-        # even when that record is not shown verbatim in the bidding prompt. Every revision is
-        # logged (🧠 STRATEGY MEMO v..) so the trajectory survives the overwrite.
+        # LLM-Reflect: a strategy memo the agent revises before every decision. Every
+        # revision is logged (🧠 STRATEGY MEMO v..), so the trajectory survives the
+        # overwrite.
         self._llm_strategy_memo: Optional[str] = None
         self._llm_memo_version: int = 0
-        # Compact rationale the model wrote for its own recent decisions, used for credit
-        # assignment during reflection (Reflexion feeds thoughts, not just outcomes).
+        # The model's stated reasoning for its recent decisions, read by the reflection.
         self._llm_decision_rationales: List[Dict[str, Any]] = []
         self._RATIONALES_IN_REFLECTION = 3
 
-        # Per-cycle state snapshot used by tool-call logging
+        # Per-cycle state snapshot for the tool-call log.
         self._tool_audit_context: Dict[str, Any] = {}
 
-        # Controller memory for the extracted policies (policies.py), keyed by
-        # strategy name. Created lazily by _policy_state_for.
+        # Controller memory of the policies (policies.py), by strategy name.
         self._policy_states: Dict[str, "policies.PolicyState"] = {}
 
         self._default_two_way_effort_tier = "medium"
@@ -420,26 +326,22 @@ class BlockchainHandler:
         self._last_reputation_feedback_count: Optional[int] = None
         self._last_reputation_average_score: Optional[float] = None
 
-        # Durable local storage for sealed-bid commit-reveal nonces (survives process restarts)
-        # Per-run storage via `AGENT_COMMITMENTS_DIR`; see
-        # `Config.commitments_directory` for why sharing it breaks parallel runs.
+        # Local storage of the sealed bids' nonces, surviving restarts; per run, via
+        # `AGENT_COMMITMENTS_DIR` (see `Config.commitments_directory`).
         _commit_dir = getattr(self.config, "commitments_directory", None)
         self._commitment_store = CommitmentStore(
             agent_id=agent_id,
             storage_dir=pathlib.Path(_commit_dir) if _commit_dir else None,
         )
-        # In-memory set of auction IDs already reasoned about this session (includes abstentions).
+        # Auctions already decided this session (including abstentions).
         self._decided_auctions: set = set()
-        # Per-cycle set: reset before each LLM reasoning run; blocks duplicate place_bid
-        # calls within the same LangGraph ReAct execution for the same auction_id.
+        # Auctions bid on in the current LLM run, to block duplicate place_bid calls.
         self._bid_attempted_auctions_this_cycle: set = set()
 
-        # Build tools for ReAct agent
         self._tools = self._build_tools()
-        
-        # Build the graph
+
         self.graph = self._build_graph()
-        
+
         prompt_info = "custom" if system_prompt else self.arch_config.prompt_template
         logger.info(
             f"BlockchainHandler initialized for agent {agent_id} "
@@ -448,7 +350,7 @@ class BlockchainHandler:
             f"model={self.llm_model}, temp={self.llm_temperature}, tools={len(self._tools)})"
         )
         logger.info("Tool-call logging enabled (state snapshot + raw tool args)")
-    
+
     #: Schema for the structured (non-tool-calling) bid decision.
     BID_RESPONSE_SCHEMA = {
         "name": "bid_decision",
@@ -465,8 +367,8 @@ class BlockchainHandler:
         },
     }
 
-    #: Appended to the prompt in structured mode. Supersedes the prompt's
-    #: "call place_bid" step — the system places the bid from this JSON.
+    #: Appended to the prompt in structured mode; replaces the prompt's "call
+    #: place_bid" step, since the agent places the bid from this JSON.
     STRUCTURED_BID_INSTRUCTION = (
         "\n\nOUTPUT FORMAT — this supersedes any instruction above to call a tool.\n"
         "Do NOT call any function. Return a single JSON object and nothing else:\n"
@@ -480,8 +382,8 @@ class BlockchainHandler:
     def _parse_structured_bid(content: str) -> Optional[Dict[str, Any]]:
         """The bid object from a model response, or None.
 
-        Tolerates a fenced code block or surrounding prose, because
-        `strict: true` is honoured by the endpoint but not by every model.
+        Tolerates a code fence or surrounding prose, because ``strict: true`` is honoured by
+        the endpoint but not by every model.
         """
         if not content:
             return None
@@ -508,15 +410,10 @@ class BlockchainHandler:
                 "reasoning": str(obj.get("reasoning") or "")}
 
     async def _structured_bid_invoke(self, llm, prompt: str, tool_lookup: Dict[str, Any]) -> Dict[str, Any]:
-        """One schema-enforced call, parsed by us, executed by us.
+        """One schema-enforced LLM call; the agent parses the answer and places the bid itself.
 
-        Mirrors how H2's cost estimator works (`response_format: json_schema`,
-        then `parse_estimate`), so the react arm and X_d face the same actuation
-        path and a comparison between them isolates pricing reasoning rather
-        than function-call formatting.
-
-        Returns a message dict shaped like the react agent's, so the caller's
-        tracing, rationale capture and outcome history are unchanged.
+        Returns a message dict shaped like the tool-calling agent's, so tracing, rationale
+        capture and the outcome history work the same way.
         """
         structured = llm.bind(
             response_format={"type": "json_schema",
@@ -530,7 +427,7 @@ class BlockchainHandler:
 
         decision = self._parse_structured_bid(content)
         if decision is None:
-            # Unparseable output is a genuine no-bid, and is counted as one.
+            # Unparseable output is a no-bid, and is counted as one.
             self._structured_parse_failures = getattr(self, "_structured_parse_failures", 0) + 1
             logger.warning("🤖 structured bid unparseable; no bid this cycle: %.200s", content)
             return {"messages": messages}
@@ -543,13 +440,10 @@ class BlockchainHandler:
         args = {"auction_id": decision["auction_id"], "bid_amount": decision["bid_amount"]}
         logger.info("🔧 structured place_bid(%s)", args)
         try:
-            # `place_bid` is a SYNC tool that calls `asyncio.run()` internally.
-            # LangChain runs sync tools in a worker thread; invoking it directly
-            # from this coroutine raises "asyncio.run() cannot be called from a
-            # running event loop" and every bid silently fails. Hop to a thread
-            # so it sees no running loop, exactly as the react path does.
+            # `place_bid` is a sync tool that calls `asyncio.run()` itself, so it runs in a
+            # worker thread, as it does on the tool-calling path.
             outcome = await asyncio.to_thread(place_bid.invoke, args)
-        except Exception as exc:                       # noqa: BLE001 - surfaced, not swallowed
+        except Exception as exc:  # surfaced, not swallowed
             logger.warning("🤖 structured place_bid failed: %s", exc)
             return {"messages": messages}
         messages.append(ToolMessage(content=json.dumps(outcome, default=str),
@@ -557,13 +451,10 @@ class BlockchainHandler:
         return {"messages": messages}
 
     def _llm_kwargs_with_usage(self) -> Dict[str, Any]:
-        """Sampling kwargs plus OpenRouter's usage accounting, merged.
+        """Sampling kwargs with OpenRouter's usage accounting merged into ``extra_body``.
 
-        `extra_body` already carries per-model sampling settings (e.g.
-        `reasoning.effort` for gpt-oss-20b), so the usage flag must be merged
-        into it. Passing a second `extra_body=` raises "got multiple values for
-        keyword argument 'extra_body'", which surfaced only as
-        "Error in ReAct reasoning" and left the arm bidding zero times.
+        ``extra_body`` already carries per-model sampling (e.g. ``reasoning.effort``), and a
+        second ``extra_body=`` would raise.
         """
         kwargs = dict(self.llm_sampling_kwargs)
         extra = dict(kwargs.get("extra_body") or {})
@@ -574,17 +465,9 @@ class BlockchainHandler:
         return kwargs
 
     def _build_tools(self) -> List:
-        """Build tools for the ReAct agent."""
+        """The LLM agent's tools."""
         handler = self
 
-        # ============================================================================
-        # COMPUTATION TOOLS - perform operation LLM is bad at
-        # ============================================================================
-
-        # ============================================================================
-        # ACTUATION TOOLS - perform actions that affect the world (e.g., placing bids)
-        # ============================================================================
-                
         @tool(return_direct=True)
         def place_bid(auction_id: int, bid_amount: int, effort_tier: Optional[str] = None) -> Dict[str, Any]:
             """Submit a sealed bid commitment for an auction on the blockchain.
@@ -603,9 +486,8 @@ class BlockchainHandler:
             handler._react_stop_after_bid_attempt = True
             auction_id_int = int(auction_id) if auction_id is not None else 0
 
-            # One bid attempt per auction per reasoning cycle — prevents the LLM from
-            # retrying after NotInCommitPhase or any other failure within the same graph
-            # execution, which was causing 10+ wasted blockchain calls per auction.
+            # One bid attempt per auction per reasoning run, so the LLM cannot retry after
+            # NotInCommitPhase or another failure.
             if auction_id_int in handler._bid_attempted_auctions_this_cycle:
                 result = {
                     "success": False,
@@ -728,44 +610,40 @@ class BlockchainHandler:
                 )
                 return result
 
-        # Build tool list based on enabled_tools configuration
         all_tools = {
             "place_bid": place_bid,
         }
-        
+
         enabled = []
         for name in self.enabled_tools:
             if name not in all_tools:
                 continue
             enabled.append(all_tools[name])
-        
+
         if len(enabled) < len(self.enabled_tools):
             missing = set(self.enabled_tools) - set(all_tools.keys())
             logger.warning(f"Some requested tools not found: {missing}")
-        
+
         logger.info(f"Enabled tools: {[t.name for t in enabled]}")
         return enabled
 
     @staticmethod
     def _normalize_tool_name(raw_name: str) -> str:
-        """Normalize malformed tool names emitted by the model.
-
-        Keeps canonical names intact while stripping known transport artifacts.
-        """
+        """Strip known transport artefacts from a tool name the model emitted."""
         if not raw_name:
             return raw_name
 
         name = str(raw_name).strip().strip("`").strip('"').strip("'")
         name = re.sub(r"\s+", "", name)
 
-        # Common malformed suffix pattern: tool_name<|channel|>commentary
+        # Common malformed suffix: tool_name<|channel|>commentary
         if "<|" in name:
             name = name.split("<|", 1)[0]
 
         return name
 
     class _ToolNameCanonicalizationMiddleware(AgentMiddleware):
-        """Canonicalize malformed tool names before ToolNode dispatch."""
+        """Canonicalise malformed tool names before the ToolNode dispatches them."""
 
         def __init__(self, tool_lookup: Dict[str, Any], normalize_fn):
             self._tool_lookup = tool_lookup
@@ -787,8 +665,7 @@ class BlockchainHandler:
             updated_call["name"] = canonical_name
             updated_request = request.override(tool_call=updated_call)
 
-            # ToolCallRequest.override does not include `tool`; set it explicitly
-            # so ToolNode can execute the resolved canonical tool.
+            # ToolCallRequest.override does not include `tool`, so it is set explicitly.
             object.__setattr__(updated_request, "tool", tool_obj)
 
             logger.warning(f"Normalized malformed tool name '{raw_name}' -> '{canonical_name}'")
@@ -801,12 +678,10 @@ class BlockchainHandler:
             return await handler(self._rewrite_request_if_needed(request))
 
     def _record_llm_last_margin(self, bid_amount: int) -> None:
-        """Store the margin % this bid represents over the total cost basis shown to the LLM.
+        """Store the margin of this bid over the cost basis the prompt showed the LLM.
 
-        Uses the same basis (execution EMA + participation overhead) the prompt surfaced this
-        cycle, so the recorded margin matches the "M% over total_cost_basis_micro_usdc" the model
-        reasoned about. Silently skips if the basis is unavailable/non-positive. Only meaningful
-        for LLM providers; harmless to compute otherwise.
+        Uses the same basis (execution EMA plus participation overhead), so the recorded
+        margin is the one the model reasoned about. Skipped if the basis is unavailable.
         """
         ctx = self._tool_audit_context or {}
         exec_micro = ctx.get("estimated_execution_cost_micro")
@@ -824,12 +699,11 @@ class BlockchainHandler:
         bid_amount: int,
         effort_tier: Optional[str],
     ) -> None:
-        """Open a decision->outcome record for a freshly committed bid (R1 episodic memory).
+        """Open a decision-outcome record for a committed bid (LLM-History).
 
-        Captures only what is known at decision time: the action taken plus the reputation and
-        balance it was taken from. Outcome fields stay None until AuctionEnded resolves them in
-        _resolve_llm_outcome_history(). Recorded unconditionally (cheap) so toggling the prompt
-        flag mid-run cannot produce a half-empty history.
+        Holds what is known at decision time; the outcome fields are filled in by
+        :meth:`_resolve_llm_outcome_history`. Always recorded, so the history is complete
+        whichever prompt features are on.
         """
         ctx = self._tool_audit_context or {}
         exec_micro = ctx.get("estimated_execution_cost_micro")
@@ -861,12 +735,10 @@ class BlockchainHandler:
         self._llm_outcome_by_auction[auction_id] = entry
 
     def _resolve_llm_outcome_history(self, state: AgentState) -> None:
-        """Fill in outcomes for past decisions once the chain reveals them.
+        """Fill in the outcomes of past decisions as the chain reveals them.
 
-        Two-stage, because the two facts arrive at different times:
-          1. AuctionEnded tells us won/lost (and, for a win, the realized revenue).
-          2. The reputation effect of a win only appears after its feedback is posted, so
-             reputation_after is left None until feedback_count actually increases.
+        In two stages: AuctionEnded gives win or loss (and a win's revenue); a win's effect
+        on reputation appears only after its feedback is posted.
         """
         current_rep = (state.get("agent_reputation") or {}).get("rating")
         current_feedback = (state.get("agent_reputation") or {}).get("feedback_count")
@@ -877,22 +749,22 @@ class BlockchainHandler:
             if a.get("auction_id") is not None
         }
 
-        # Stage 1: settle win/loss for auctions that ended this cycle.
+        # Stage 1: win or loss for auctions that ended this cycle.
         for auction_id in self._recently_ended_auction_ids:
             entry = self._llm_outcome_by_auction.get(int(auction_id))
             if entry is None or entry["outcome"] != "pending":
                 continue
             if int(auction_id) in won_ids:
                 entry["outcome"] = "won"
-                # A loss has no feedback, so its reputation is settled immediately; a win's
-                # reputation effect waits for feedback (stage 2).
+                # A loss has no feedback, so its reputation is settled now; a win waits for its
+                # feedback (stage 2).
             else:
                 entry["outcome"] = "lost"
                 entry["reputation_after"] = current_rep
                 entry["balance_after_usd"] = balance_now
         self._recently_ended_auction_ids = []
 
-        # Stage 2: a win's reputation effect lands only once its feedback is counted.
+        # Stage 2: a win's reputation effect, once its feedback is counted.
         if isinstance(current_feedback, int):
             for entry in self._llm_outcome_history:
                 if entry["outcome"] != "won" or entry["reputation_after"] is not None:
@@ -903,7 +775,7 @@ class BlockchainHandler:
                     entry["balance_after_usd"] = balance_now
 
     def _build_llm_outcome_history_view(self) -> List[Dict[str, Any]]:
-        """Render the history as compact prompt-ready rows (oldest first, optionally capped)."""
+        """The history as prompt rows, oldest first, optionally capped."""
         limit = int(getattr(self.config, "llm_outcome_history_limit", 0) or 0)
         entries = self._llm_outcome_history
         if limit > 0:
@@ -939,11 +811,10 @@ class BlockchainHandler:
     def _record_decision_rationale(self, text: str, auction_ids: List[int]) -> None:
         """Keep the model's own stated reasoning for its most recent decisions.
 
-        Reflexion feeds the self-reflection model the trajectory *including thoughts*, not just
-        actions and rewards, because credit assignment needs to know why an action was chosen —
-        a bad outcome from sound reasoning warrants a different revision than one from a broken
-        belief. The reasoning protocol already forces compact structured write-outs, so this
-        stores those lines rather than whole prompts or states.
+        The reflection judges the reasoning as well as the outcome: a bad outcome from sound
+        reasoning calls for a different revision than one from a wrong belief. The
+        reasoning protocol already makes the model write compact structured lines, which
+        are stored instead of whole prompts.
         """
         text = (text or "").strip()
         if not text or not auction_ids:
@@ -956,13 +827,13 @@ class BlockchainHandler:
         self._llm_decision_rationales.append(
             {"auction_ids": list(auction_ids), "text": summary[:1200]}
         )
-        # Only the newest few are ever rendered; drop the rest so memory cannot grow unbounded.
+        # Only the newest few are shown, so older ones are dropped.
         excess = len(self._llm_decision_rationales) - self._RATIONALES_IN_REFLECTION
         if excess > 0:
             del self._llm_decision_rationales[:excess]
 
     def _render_outcome_table(self, rows: List[Dict[str, Any]]) -> str:
-        """Compact numeric record of every past decision — cheap enough to show in full."""
+        """Compact numeric record of every past decision."""
         if not rows:
             return "  (no completed decisions yet)"
         lines = [
@@ -990,7 +861,7 @@ class BlockchainHandler:
     )
 
     def _build_reflection_prompt(self, state: AgentState) -> str:
-        """Prompt for the R2 reflection call: revise the memo from the newest evidence."""
+        """The reflection prompt (LLM-Reflect): revise the memo from the newest evidence."""
         record = self._render_outcome_table(self._build_llm_outcome_history_view())
         rationales = "\n".join(
             f"  [auctions {r['auction_ids']}] {r['text']}" for r in self._llm_decision_rationales
@@ -1038,12 +909,11 @@ The policy you will follow on the next auction, specific enough to act on: which
 What you do not yet know, and what you could try next to find out."""
 
     async def _maybe_generate_reflection(self, state: AgentState) -> None:
-        """Revise the strategy memo before deciding. No-op unless llm_reflection_enabled.
+        """Revise the strategy memo before deciding (LLM-Reflect); a no-op otherwise.
 
-        Runs once per bidding cycle, but only after at least one decision exists to learn from.
-        Cost is charged to the agent as ordinary (non-execution) reasoning overhead. Failures are
-        swallowed: losing a revision must never block the bidding cycle, and the previous memo
-        stays in force.
+        Runs once per bidding cycle, once a decision exists to learn from. Its cost is
+        charged as reasoning overhead. A failed revision never blocks bidding; the previous
+        memo stays in force.
         """
         if not getattr(self.config, "llm_reflection_enabled", False):
             return
@@ -1086,7 +956,7 @@ What you do not yet know, and what you could try next to find out."""
             logger.warning(f"Reflection failed (keeping previous memo): {e}")
 
     def _build_tool_audit_context(self, state: AgentState) -> Dict[str, Any]:
-        """Build per-cycle state snapshot to include in each tool-call audit event."""
+        """The state snapshot logged with each tool call (the TOOL_AUDIT lines)."""
         auctions = state.get("eligible_active_auctions", []) or []
         agent_reputation = (state.get("agent_reputation") or {}).get("rating")
         competitor_reps = {
@@ -1165,7 +1035,7 @@ What you do not yet know, and what you could try next to find out."""
         result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
     ) -> None:
-        """Record a structured tool-call event with state snapshot and raw LLM args."""
+        """Log a tool call with the state snapshot and the raw LLM arguments."""
         event = {
             "ts": datetime.utcnow().isoformat() + "Z",
             "agent_id": self.agent_id,
@@ -1174,11 +1044,10 @@ What you do not yet know, and what you could try next to find out."""
             "current_state": self._tool_audit_context or {},
         }
         logger.info(f"TOOL_AUDIT {json.dumps(event, default=str)}")
-    
+
     def _build_graph(self) -> StateGraph:
-        """Build the LangGraph workflow for blockchain operations."""
         workflow = StateGraph(AgentState)
-        
+
         workflow.add_node("router", self._router_node)
         workflow.add_node("generate_feedback_auth", self._generate_feedback_auth_node)
         workflow.add_node("call_complete_service", self._call_complete_service_node)
@@ -1196,71 +1065,60 @@ What you do not yet know, and what you could try next to find out."""
 
         workflow.add_edge("generate_feedback_auth", "call_complete_service")
         workflow.add_edge("call_complete_service", END)
-        # Minimal baseline: the bidding path ends after reasoning. Abstention is implicit
-        # (a cycle that ends without place_bid); the separate continuation node is removed.
-        # Any locally pending sealed-bid commitments are revealed (if their auction has
-        # entered the Reveal phase) before gathering state for this cycle's bidding decision.
+        # The bidding path ends after reasoning; a cycle without place_bid is an abstention.
+        # Pending commitments whose auction is in its reveal phase are revealed before
+        # the state for this cycle's decisions is gathered.
         workflow.add_edge("reveal_commitments", "gather_state")
         workflow.add_edge("gather_state", "reasoning")
         workflow.add_edge("reasoning", END)
-        
+
         return workflow.compile()
-    
+
     async def initialize(self) -> bool:
-        """Initialize the blockchain handler by loading contracts."""
+        """Connect to the chain and load the contracts."""
         try:
             await self.client._initialize()
-            
+
             if not self.config.reverse_auction_address:
                 logger.warning("ReverseAuction address not configured")
                 return False
-            
+
             self.reverse_auction_contract = await self.client.load_contract(
                 name="ReverseAuction",
                 address=self.config.reverse_auction_address,
                 abi=get_reverse_auction_abi()
             )
-            
+
             if self.config.identity_registry_address:
                 self.identity_registry_contract = await self.client.load_contract(
                     name="IdentityRegistry",
                     address=self.config.identity_registry_address,
                     abi=get_identity_registry_abi()
                 )
-            
+
             if self.config.reputation_registry_address:
                 self.reputation_registry_contract = await self.client.load_contract(
                     name="ReputationRegistry",
                     address=self.config.reputation_registry_address,
                     abi=get_reputation_registry_abi()
                 )
-            
+
             self.contracts_loaded = True
             logger.info("✅ BlockchainHandler initialized successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize BlockchainHandler: {e}", exc_info=True)
             return False
-    
+
     def _router_node(self, state: AgentState) -> AgentState:
-        """Router node - entry point that examines action field."""
         logger.info(f"🔀 Router: action={state['action']}")
         return state
-    
+
     async def _fetch_reputation(self, agent_id: int) -> Dict[str, Any]:
-        """Fetch reputation for an agent from the ERC-8004 ReputationRegistry.
+        """An agent's rating (a float) and feedback count from the Reputation Registry.
 
-        getSummary() reverts outright when given an empty clientAddresses array, so
-        clients must be enumerated via getClients() first. tag1/tag2 are string filters
-        (empty string = no filter), not bytes32. The returned average is a fixed-point
-        (value, decimals) pair, preserved here as a float rather than truncated to int.
-
-        Args:
-            agent_id: Agent ID to fetch reputation for
-
-        Returns:
-            Dictionary with rating (float) and feedback_count
+        See :mod:`agents.common.reputation_lookup` for the registry's quirks.
         """
         try:
             if not self.reputation_registry_contract:
@@ -1286,15 +1144,17 @@ What you do not yet know, and what you could try next to find out."""
             return {"rating": self.initial_reputation_default, "feedback_count": 0}
 
     def _has_local_commitment(self, auction_id: int) -> bool:
-        """Cheap, local-only check for an existing sealed-bid commitment. Use for
-        early/cheap pre-filtering; use _has_committed() as the authoritative gate
-        immediately before sending a transaction."""
+        """Whether a commitment for this auction is stored locally.
+
+        A cheap pre-filter; :meth:`_has_committed` is the authoritative check before a transaction.
+        """
         return self._commitment_store.get_commitment(int(auction_id)) is not None
 
     async def _has_committed(self, auction_id: int) -> bool:
-        """Authoritative check for whether we've already committed to this auction
-        (local store first, then an on-chain fallback in case the local record was
-        lost but a commitment still exists from a prior process)."""
+        """Whether this agent has committed to the auction: the local store, then the chain.
+
+        The chain covers a commitment from an earlier process whose local record was lost.
+        """
         if self._has_local_commitment(auction_id):
             return True
         try:
@@ -1366,13 +1226,9 @@ What you do not yet know, and what you could try next to find out."""
     def _reveal_jitter_seconds(self, reveal_windows: List[int]) -> float:
         """Pre-reveal delay, capped to a fraction of the shortest reveal window.
 
-        Mirrors :meth:`_bid_jitter_seconds`. The cap matters more here: the
-        reveal window is short (6 s in the experiments) and a commitment not revealed inside it
-        is dropped, so the delay must stay a small fraction of it.
-
-        Drawn from :attr:`_reveal_rng` rather than ``self._rng`` so that adding
-        this does not shift the bidding draw sequence — the commit jitter for a
-        given (run_seed, agent_id) is unchanged by this feature existing.
+        The reveal window is short (6 s in the experiments) and an unrevealed commitment is
+        forfeited, so the delay stays a small fraction of it. Drawn from
+        :attr:`_reveal_rng`, so it does not shift the bidding draws.
         """
         cap = self._REVEAL_JITTER_MAX_SECONDS
         windows = [int(w) for w in reveal_windows if w]
@@ -1381,29 +1237,23 @@ What you do not yet know, and what you could try next to find out."""
         return self._reveal_rng.uniform(0, cap)
 
     async def _chain_timestamp(self) -> Optional[int]:
-        """Current block timestamp, or None if the chain cannot be read.
+        """The current block timestamp, or None if the chain cannot be read.
 
-        Block time, not wall time: on a forked or snapshot-loaded Anvil the two
-        are unrelated.
+        Block time, not wall time: on a snapshot-loaded Anvil the two are unrelated.
         """
         try:
             block = await self.client.get_block("latest")
             return int(block["timestamp"])
-        except Exception as e:  # a stale value is better than no decision
+        except Exception as e:  # a stale value is better than none
             logger.debug(f"Could not read chain timestamp: {e}")
             return None
 
     def _fresh_time_remaining(self, auction: Dict[str, Any], decision_time: Optional[int]) -> int:
-        """Seconds left in this auction's commit phase, as of *now*.
+        """Seconds left in this auction's commit phase, as of now.
 
-        Takes the **more pessimistic** of the value captured during state
-        gathering and the one recomputed against the current block clock. On a
-        real chain the recomputed value always wins, because time only moves
-        forward and the captured value predates the jitter sleep — which is the
-        staleness this exists to fix. Taking the minimum rather than replacing
-        outright means a caller that supplies a deliberately short window still
-        gets the window it asked for: for a
-        deadline gate, the safe reading of two numbers is the smaller one.
+        The smaller of the value captured during state gathering and the one recomputed from
+        the current block time: the captured value predates the jitter sleep, and for a
+        deadline the safe reading of two numbers is the smaller one.
         """
         captured = int(auction.get("time_remaining", 0) or 0)
         end_time = auction.get("end_time")
@@ -1421,13 +1271,10 @@ What you do not yet know, and what you could try next to find out."""
         mode: str = "heuristic",
         commit_deadline: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Seal and submit a bid commitment for an auction.
+        """Seal and submit a bid.
 
-        Generates a fresh nonce, persists it locally BEFORE broadcasting the
-        transaction (so a crash right after broadcast doesn't forfeit the ability
-        to reveal later), then sends commitBid. The nonce/bid amount are only
-        recoverable from local storage - if this process loses them with no
-        successful save, the commitment becomes permanently unrevealable.
+        A fresh nonce is persisted locally before the transaction is broadcast, so a crash
+        right after broadcast does not forfeit the reveal: the nonce exists nowhere else.
         """
         auction_id = int(auction_id)
         bid_amount = int(bid_amount)
@@ -1447,9 +1294,9 @@ What you do not yet know, and what you could try next to find out."""
                 auction_id, self.agent_id, bid_amount, nonce_bytes, sender,
             )
 
-            # Persist BEFORE sending the tx: an orphaned local record (tx never lands)
-            # self-heals via the on-chain getCommitment check; a lost nonce after a
-            # successful commit does not.
+            # Persist before sending: an orphaned local record (the transaction never lands)
+            # heals itself through the on-chain check; a lost nonce after a successful commit
+            # does not.
             self._commitment_store.save_commitment(
                 auction_id,
                 bid_amount=bid_amount,
@@ -1507,9 +1354,8 @@ What you do not yet know, and what you could try next to find out."""
             logger.error(f"Error committing bid for auction {auction_id}: {e}")
             error_msg = str(e)
 
-            # Only safe to drop the local record if we know the tx was never broadcast;
-            # if broadcast happened and only the wait/confirmation step threw, the tx may
-            # still land - keep the record and let reveal-time getCommitment self-heal.
+            # Drop the local record only if the transaction was never broadcast; if only the
+            # wait failed, it may still land.
             if not tx_broadcast:
                 self._commitment_store.remove_commitment(auction_id)
 
@@ -1548,7 +1394,7 @@ What you do not yet know, and what you could try next to find out."""
             logger.debug(f"Could not verify commit timing for auction {auction_id}: {e}")
 
     async def _reveal_bid(self, auction_id: int) -> Dict[str, Any]:
-        """Reveal a previously committed bid using the locally persisted bid amount + nonce."""
+        """Reveal a committed bid with the locally stored amount and nonce."""
         auction_id = int(auction_id)
         commitment = self._commitment_store.get_commitment(auction_id)
         if commitment is None:
@@ -1600,14 +1446,11 @@ What you do not yet know, and what you could try next to find out."""
             return {"success": False, "auction_id": auction_id, "error": error_msg}
 
     async def _reveal_commitments_node(self, state: AgentState) -> AgentState:
-        """Reveal any locally pending commitments whose auction has entered the Reveal phase.
+        """Reveal the pending commitments whose auction is in its reveal phase.
 
-        A seeded delay precedes the first reveal of each cycle. Unlike the
-        commit, which each agent paces by its own jittered clock, the reveal is
-        triggered by a *shared* on-chain deadline: every agent polling for the
-        phase flip fires the instant it sees it, so the reveals land in the same
-        block and their order is decided by mempool arrival. See
-        :attr:`_REVEAL_JITTER_MAX_SECONDS`.
+        A seeded delay precedes the first reveal of each cycle: the reveal is triggered by
+        a shared on-chain deadline, so without it every agent would reveal in the same block,
+        in an order decided by mempool arrival (see :attr:`_REVEAL_JITTER_MAX_SECONDS`).
         """
         pending_ids = self._commitment_store.pending_auction_ids()
         reveals: List[Dict[str, Any]] = []
@@ -1623,12 +1466,11 @@ What you do not yet know, and what you could try next to find out."""
                 logger.warning(f"Could not fetch auction phase for {auction_id}: {e}")
                 continue
 
-            if phase == 0:  # Commit - not yet time to reveal
+            if phase == 0:  # commit phase: not yet
                 continue
 
-            # Once per cycle, and only when something is actually revealable, so
-            # an agent with nothing to reveal never pays the delay and the cap is
-            # measured against this auction's own reveal window.
+            # Once per cycle, and only when something is revealable, so an agent with nothing
+            # to reveal never waits.
             if phase == 1 and not jittered:
                 jittered = True
                 window = 0
@@ -1647,7 +1489,7 @@ What you do not yet know, and what you could try next to find out."""
                     )
                     await asyncio.sleep(delay)
 
-            if phase == 2:  # Ended - reveal window passed without us revealing
+            if phase == 2:  # ended without a reveal
                 logger.warning(
                     f"⏰ Reveal window for auction {auction_id} ended before we revealed; "
                     f"dropping local commitment"
@@ -1655,7 +1497,7 @@ What you do not yet know, and what you could try next to find out."""
                 self._commitment_store.remove_commitment(auction_id)
                 continue
 
-            # phase == 1 (Reveal)
+            # Reveal phase
             try:
                 on_chain_commitment = await self.client.call_contract_method(
                     "ReverseAuction", "getCommitment", auction_id, self.agent_id
@@ -1707,9 +1549,8 @@ What you do not yet know, and what you could try next to find out."""
             auction = await self.client.call_contract_method(
                 "ReverseAuction", "getAuctionDetails", auction_id
             )
-            # Auction struct order (ReverseAuction.sol): 4 commitDuration,
-            # 5 startTime, 13 revealDuration. The reveal window opens when the
-            # commit phase ends.
+            # Auction struct (ReverseAuction.sol): 4 commitDuration, 5 startTime,
+            # 13 revealDuration. The reveal window opens when the commit phase ends.
             duration, start_time, reveal_duration = int(auction[4]), int(auction[5]), int(auction[13])
             block = await self.client.get_block("latest")
             return max(0, start_time + duration + reveal_duration - int(block["timestamp"]))
@@ -1718,7 +1559,7 @@ What you do not yet know, and what you could try next to find out."""
             return None
 
     def _resolve_bid_effort_tier(self, selected_effort_tier: Optional[str]) -> Optional[str]:
-        """Resolve bid effort tier when two-way coupling is active."""
+        """The effort tier to bid with under two-way coupling; None otherwise."""
         if self.coupling_mode != "two_way":
             return None
 
@@ -1727,13 +1568,9 @@ What you do not yet know, and what you could try next to find out."""
             default=self._default_two_way_effort_tier,
         )
 
-    # ------------------------------------------------------------------
-    # Adapters onto the pure policies in policies.py. These translate the
-    # agent's state dict and config into the dataclasses the policies take.
-    # ------------------------------------------------------------------
-
+    # --- Adapters onto policies.py: state dict and config into the policies' dataclasses ---
     def _observed_execution_cost_usd(self, state: AgentState) -> float:
-        """Observable execution-cost estimate (USD), falling back to the configured prior."""
+        """The execution-cost estimate (USD), or the configured prior."""
         observed_cost_usd = state.get("estimated_execution_cost")
         if observed_cost_usd is None:
             observed_cost_usd = state.get("estimated_service_cost")
@@ -1744,10 +1581,7 @@ What you do not yet know, and what you could try next to find out."""
         return max(0.0, float(observed_cost_usd))
 
     def _policy_state_for(self, strategy: str) -> "policies.PolicyState":
-        """Controller memory (margin, prev_wins, bids_placed) for one strategy.
-
-        Persists for the agent's lifetime; only the active strategy is ever used.
-        """
+        """Controller memory (margin, prev_wins, bids_placed) of one strategy, for the agent's lifetime."""
         return self._policy_states.setdefault(strategy, policies.PolicyState())
 
     def _policy_params(self, min_margin: float, max_margin: float) -> "policies.PolicyParams":
@@ -1813,8 +1647,7 @@ What you do not yet know, and what you could try next to find out."""
             quality_by_tier=state.get("effort_level_quality_stats") or {},
             overhead_per_participation_micro=int(round(participation_overhead_usd * 1e6)),
             unrecovered_overhead_micro=int(round(unrecovered_usd * 1e6)),
-            # The win signal every outcome-driven controller uses: one entry per
-            # completed delivery observed so far.
+            # Wins: one per delivered job so far.
             wins=len(state.get("past_execution_costs") or []),
             # The decline rule's input; insertion order is win order.
             own_winning_bids_micro=tuple(self._own_winning_bids_micro.values()),
@@ -1839,8 +1672,8 @@ What you do not yet know, and what you could try next to find out."""
         levels = state.get("effort_level_execution_costs") or {}
         quality = state.get("effort_level_quality_stats") or {}
         if isinstance(estimator, cost_estimators.DecomposedCostEstimator):
-            # The prompt states the agent's own averages as the level the
-            # multiplier is relative to. Quality comes from its own feedback.
+            # The prompt states the agent's own per-tier averages, the level the multiplier
+            # is relative to; quality comes from its own feedback.
             estimator.levels = {
                 tier: {
                     "cost": float(levels.get(tier, 0.0) or 0.0),
@@ -1858,10 +1691,8 @@ What you do not yet know, and what you could try next to find out."""
         multipliers: Dict[str, float] = {}
         for tier in policies.EFFORT_TIERS:
             level_usd = float(levels.get(tier, 0.0) or 0.0)
-            # What is left of the commit window, minus what the bid still needs
-            # after the estimate returns. Without this the transport's own
-            # 180s x 3 retry budget applies and a single slow call costs the
-            # agent its auction *and* every auction that opens while it waits.
+            # What is left of the commit window, minus what the bid still needs after the
+            # estimate returns; otherwise the transport's own retry budget would apply.
             outcome = estimator.multiplier_for(
                 requirement_id, tier, level_usd,
                 deadline_seconds=self._estimator_deadline_seconds(auction),
@@ -1894,11 +1725,8 @@ What you do not yet know, and what you could try next to find out."""
     def _estimator_deadline_seconds(self, auction: Dict[str, Any]) -> Optional[float]:
         """Seconds the estimator may spend, from this auction's own window.
 
-        Uses the captured `time_remaining` rather than a re-read chain clock:
-        this runs *before* the call, the value is already fresh, and an extra
-        RPC round-trip here would eat the budget it is measuring. The freshness
-        gate re-checks against the chain after the call returns, which is where
-        an over-run is actually caught.
+        Uses the captured ``time_remaining`` rather than a chain read, which would eat the
+        budget it measures; the freshness gate re-checks against the chain afterwards.
         """
         try:
             remaining = float(auction.get("time_remaining") or 0.0)
@@ -1908,8 +1736,7 @@ What you do not yet know, and what you could try next to find out."""
             return None
         budget = remaining - float(self._bid_freshness_min_seconds) - \
             cost_estimators.ESTIMATOR_DEADLINE_RESERVE_SECONDS
-        # A window too short to finish in is not a reason to wait longer; the
-        # estimator returns the heuristic almost immediately at this floor.
+        # At this floor the estimator returns the heuristic almost at once.
         return max(1.0, budget)
 
     def _task_cost_multipliers(
@@ -1923,11 +1750,10 @@ What you do not yet know, and what you could try next to find out."""
         return state.get("_task_cost_multipliers")
 
     def _current_requirement_id(self, state: AgentState) -> Optional[str]:
-        """Requirement behind the auction being priced, and its features.
+        """The request behind the auction being priced; also loads its features into the estimator.
 
-        The service CID *is* the dataset reference, so the agent reads the
-        requirement the same way it would read a service description from IPFS
-        in a live market — and the estimator gets features for it.
+        The service CID is the dataset reference, read the way a live agent would read a
+        job description.
         """
         auction = state.get("_estimator_auction") or {}
         cid = auction.get("service_description_cid")
@@ -1948,7 +1774,6 @@ What you do not yet know, and what you could try next to find out."""
         return requirement_id
 
     def _get_estimator_sampler(self) -> DatasetSampler:
-        """Dataset access for feature extraction, cached."""
         if getattr(self, "_estimator_sampler", None) is None:
             self._estimator_sampler = DatasetSampler(
                 str(getattr(self.config, "sampled_dataset_dir", "")),
@@ -1977,15 +1802,13 @@ What you do not yet know, and what you could try next to find out."""
                 "calls_made": estimator.calls_made,
                 "calls_cached": estimator.calls_cached,
                 "calls_failed": estimator.calls_failed,
-                # Per-reason, so an analysis can tell "the model was too slow"
-                # from "the model could not be parsed" from "no history yet".
                 "degraded": dict(getattr(estimator, "degraded", {}) or {}),
                 "reasoning_cost_usd": round(estimator.reasoning_cost_usd, 6),
                 "history_len": len(estimator.outcomes),
             })
             if isinstance(estimator, cost_estimators.DecomposedCostEstimator):
-                # The decomposed arm is gated on calibration, not on anchors, so
-                # a run where it never fired is diagnosable from the status file.
+                # Calibration state, so a run where LLM-Estimate never priced is visible in the
+                # status file.
                 fit = None
                 try:
                     from agents.provider.estimation import prompt as estimation_prompt
@@ -2028,7 +1851,7 @@ What you do not yet know, and what you could try next to find out."""
         )
 
     def _sync_effort_quality_from_reputation(self, agent_reputation: Dict[str, Any]) -> None:
-        """Infer newly posted on-chain feedback and attribute it to completed effort tiers."""
+        """Infer newly posted feedback from the reputation and attribute it to the delivered effort tiers."""
         feedback_count = int(agent_reputation.get("feedback_count", 0) or 0)
         average_score = float(
             agent_reputation.get("rating", self.initial_reputation_default)
@@ -2083,27 +1906,26 @@ What you do not yet know, and what you could try next to find out."""
             applied,
             fallback_used,
         )
-    
+
     def _route_action(self, state: AgentState) -> str:
-        """Routing function for action field."""
         if state.get("action") == "complete_service":
             return "complete_service"
         return "monitor"
-    
+
     async def _generate_feedback_auth_node(self, state: AgentState) -> AgentState:
-        """Generate ERC-8004 feedbackAuth for service completion."""
+        """Sign the ERC-8004 feedbackAuth for a completed job."""
         logger.info("🔐 Generating feedbackAuth...")
-        
+
         try:
             client_address = state.get("client_address")
             if not client_address:
                 raise ValueError("client_address is required")
-            
-            # Use blockchain time for expiry to handle time-travel scenarios (e.g., in tests)
+
+            # Expiry from block time, not wall time.
             current_block = await self.client.w3.eth.get_block('latest')
             block_timestamp = current_block['timestamp']
-            expiry = block_timestamp + 3600  # 1 hour from current block time
-            
+            expiry = block_timestamp + 3600  # one hour
+
             feedback_auth = generate_feedback_auth(
                 agent_id=self.agent_id,
                 client_address=client_address,
@@ -2114,19 +1936,19 @@ What you do not yet know, and what you could try next to find out."""
                 signer_address=self.client.account.address,
                 private_key=self.config.private_key
             )
-            
+
             if not verify_feedback_auth_format(feedback_auth):
                 raise ValueError("Generated feedbackAuth has invalid format")
-            
+
             state["feedback_auth"] = feedback_auth
             logger.info("✅ FeedbackAuth generated")
-            
+
         except Exception as e:
             logger.error(f"Error generating feedbackAuth: {e}")
             state["error"] = str(e)
-        
+
         return state
-    
+
     #: getAuctionDetails struct index 13 — `revealDuration`.
     _AUCTION_REVEAL_DURATION = 13
     #: getAuctionDetails struct index 10 — `isCompleted`.
@@ -2135,13 +1957,10 @@ What you do not yet know, and what you could try next to find out."""
     _AUCTION_WINNING_BID = 8
 
     async def _auction_is_completed(self, auction_id: int) -> bool:
-        """Read completion straight from the chain.
+        """Whether the chain records the job as completed.
 
-        The chain, not the receipt, is the authority on whether the work settled.
-        A send that raises locally may still have landed — the observed failure
-        mode is a receipt the client reads as failed followed by retries that
-        revert with `ServiceAlreadyCompleted()`, which is the contract saying the
-        first attempt worked.
+        The chain, not the receipt, decides: a send that fails locally may still have
+        landed, after which retries revert with ``ServiceAlreadyCompleted()``.
         """
         try:
             auction = await self.client.call_contract_method(
@@ -2153,13 +1972,9 @@ What you do not yet know, and what you could try next to find out."""
             return False
 
     def revenue_booked(self, auction_id: int) -> bool:
-        """Whether this auction's winning bid is already in the ledger.
+        """Whether this auction's winning bid is already booked.
 
-        The orchestrator's status report needs this to avoid double-counting a
-        job's execution cost while it is still ``DELIVERING`` — see
-        ``Orchestrator.get_status``. Exposed as a method rather than leaving
-        callers to read ``_revenue_recorded``, so the reporting layer does not
-        depend on a private attribute of this one.
+        Used by ``Orchestrator.get_status`` to avoid double-counting a job in DELIVERING.
         """
         try:
             return int(auction_id) in self._revenue_recorded
@@ -2167,11 +1982,10 @@ What you do not yet know, and what you could try next to find out."""
             return False
 
     async def _record_completion_revenue(self, auction_id: int) -> None:
-        """Book the winning bid once, however many attempts it took.
+        """Book the winning bid once, however many attempts completion took.
 
-        Idempotent by auction id: a retry that discovers the work already
-        completed must still record the revenue the failed attempt never booked,
-        but must not book it twice.
+        A retry that finds the job already completed still books the revenue the failed
+        attempt never booked, but never books it twice.
         """
         if auction_id in self._revenue_recorded:
             return
@@ -2186,31 +2000,30 @@ What you do not yet know, and what you could try next to find out."""
         logger.info(f"💰 Revenue from auction {auction_id}: ${revenue_usd:.2f} USD")
 
     async def _call_complete_service_node(self, state: AgentState) -> AgentState:
-        """Call completeService on ReverseAuction contract.
+        """Call completeService, idempotently.
 
-        **Idempotent.** Both failure paths — a receipt read as failed, and a send
-        that reverts because the service is already completed — re-read the chain
-        before reporting an error, so a job that actually settled is not retried
-        into a loop and is not lost to the agent's own bookkeeping.
+        A receipt read as failed, and a send reverting because the job is already completed,
+        both re-read the chain before reporting an error, so a settled job is neither
+        retried in a loop nor lost to the bookkeeping.
         """
         logger.info("📝 Calling completeService...")
-        
+
         try:
             auction_id = state.get("auction_id")
             feedback_auth = state.get("feedback_auth")
-            
+
             if auction_id is None:
                 raise ValueError("auction_id is required")
             if not feedback_auth:
                 raise ValueError("feedback_auth is required")
-            
+
             estimated_gas = await self.client.estimate_gas(
                 "ReverseAuction",
                 "completeService",
                 auction_id,
                 feedback_auth
             )
-            
+
             tx_hash = await self.client.send_transaction(
                 "ReverseAuction",
                 "completeService",
@@ -2218,11 +2031,10 @@ What you do not yet know, and what you could try next to find out."""
                 feedback_auth,
                 gas_limit=estimated_gas + 50000
             )
-            
+
             receipt = await self.client.wait_for_transaction(tx_hash)
-            
+
             if receipt['status'] == 1:
-                # Track gas cost
                 gas_used = receipt.get('gasUsed', 0)
                 gas_price_wei = receipt.get('effectiveGasPrice', 0)
                 self.cost_tracker.add_gas_cost(
@@ -2230,15 +2042,14 @@ What you do not yet know, and what you could try next to find out."""
                     gas_price_wei=gas_price_wei,
                     context="complete_service"
                 )
-                
+
                 await self._record_completion_revenue(auction_id)
 
                 state["tx_hash"] = tx_hash
                 logger.info(f"✅ Service completed: {tx_hash}")
             elif await self._auction_is_completed(auction_id):
-                # The receipt said failure; the chain says the work settled. The
-                # chain wins. Gas is not booked here — the failed receipt's gas
-                # is not this transaction's to claim.
+                # The receipt says failure but the chain says the job settled; the chain wins.
+                # The failed receipt's gas is not booked.
                 await self._record_completion_revenue(auction_id)
                 state["tx_hash"] = tx_hash
                 logger.warning(
@@ -2249,10 +2060,8 @@ What you do not yet know, and what you could try next to find out."""
                 raise Exception("Transaction failed")
 
         except Exception as e:
-            # `ServiceAlreadyCompleted()` (0xdb700e9d) surfaces here as a gas
-            # estimation revert on a retry. Treating it as an error would fail a
-            # job that is, in fact, done — and would keep the agent from ever
-            # recording the outcome.
+            # `ServiceAlreadyCompleted()` (0xdb700e9d) surfaces as a gas-estimation revert
+            # on a retry: the job is done, not failed.
             auction_id = state.get("auction_id")
             if auction_id is not None and await self._auction_is_completed(auction_id):
                 await self._record_completion_revenue(auction_id)
@@ -2266,16 +2075,16 @@ What you do not yet know, and what you could try next to find out."""
             state["error"] = str(e)
 
         return state
-    
+
     async def _gather_state_node(self, state: AgentState) -> AgentState:
-        """Gather blockchain state: won auctions and active eligible auctions."""
+        """Gather the market state: newly won auctions, active eligible auctions, reputations, own economics."""
         logger.info("📡 Gathering blockchain state...")
-        
+
         try:
             current_block = await self.client.get_block_number()
             from_block = self._last_processed_block + 1 if self._last_processed_block > 0 else max(0, current_block - 100)
-            
-            # 1. Fetch AuctionEnded events to find won auctions
+
+            # 1. Newly won auctions, from AuctionEnded events
             won_auctions = []
             try:
                 ended_events = await self.client.get_contract_events(
@@ -2295,7 +2104,7 @@ What you do not yet know, and what you could try next to find out."""
                         auction_id = int(auction_id)
                         ended_auction_ids.append(auction_id)
                         self._own_current_bid_by_auction.pop(auction_id, None)
-                
+
                 for event in ended_events:
                     args = event.get("args", {})
                     if args.get("winningAgentId") == self.agent_id:
@@ -2307,15 +2116,14 @@ What you do not yet know, and what you could try next to find out."""
                         effort_tier = self._resolve_bid_effort_tier(
                             self._auction_effort_tier_by_auction.get(auction_id)
                         )
-                        
-                        # Fetch full auction details
+
                         try:
                             auction = await self.client.call_contract_method(
                                 "ReverseAuction",
                                 "getAuctionDetails",
                                 auction_id
                             )
-                            
+
                             auction_info = {
                                 "auction_id": auction_id,
                                 "buyer_address": auction[1],
@@ -2339,7 +2147,7 @@ What you do not yet know, and what you could try next to find out."""
                                         "effort_tier": effort_tier,
                                     }
                                 )
-                            
+
                             won_auctions.append(auction_info)
                             # The clearing-price belief is updated when the auction
                             # resolves, which is when the agent learns the price.
@@ -2355,37 +2163,31 @@ What you do not yet know, and what you could try next to find out."""
                         except Exception as e:
                             logger.error(f"Error fetching details for won auction {auction_id}: {e}")
 
-                # Hand the ended ids to _resolve_llm_outcome_history(), which runs after
-                # reputation is fetched below (it needs the post-auction rating).
+                # The ended auctions are resolved in the outcome history after the reputation is
+                # read below.
                 self._recently_ended_auction_ids.extend(ended_auction_ids)
 
                 for auction_id in ended_auction_ids:
                     self._auction_effort_tier_by_auction.pop(int(auction_id), None)
             except Exception as e:
                 logger.warning(f"Error fetching AuctionEnded events: {e}")
-            
+
             state["won_auctions"] = won_auctions
-            
-            # 2. Fetch all active auctions we're eligible for
+
+            # 2. Active auctions this agent is eligible for
             eligible_active_auctions = []
             try:
                 auction_count = await self.client.call_contract_method(
                     "ReverseAuction",
                     "auctionIdCounter"
                 )
-                
-                # One block read for the whole scan, not one per auction. The
-                # timestamp is identical for every auction in a single pass, so
-                # asking N times was N-1 wasted round trips.
+
+                # One block read for the whole scan: the timestamp is the same for every auction.
                 block = await self.client.get_block('latest')
                 current_time = block['timestamp']
 
-                # An auction that has settled can never become active again, so
-                # re-reading it every cycle is pure cost. Without this the scan
-                # is O(every auction ever created) and grows through the run:
-                # measured 0.03s at auction 1, 1.56s at auction 30, which is what
-                # stretched the loop cycle to an 8s tail and made agents miss
-                # reveal windows late in the run.
+                # A settled auction can never become active again, so it is skipped; otherwise
+                # the scan grows with every auction created and slows the loop late in a run.
                 scannable = [
                     auction_id for auction_id in range(1, auction_count + 1)
                     if auction_id not in self._settled_auctions
@@ -2403,43 +2205,34 @@ What you do not yet know, and what you could try next to find out."""
                             auction_id,
                             self.agent_id
                         )
-                        
+
                         if not is_eligible:
                             continue
-                        
+
                         auction = await self.client.call_contract_method(
                             "ReverseAuction",
                             "getAuctionDetails",
                             auction_id
                         )
-                        
-                        # Auction struct indices (based on contract):
-                        # 0: id, 1: buyer, 2: serviceDescriptionCid, 3: maxPrice
-                        # 4: duration, 5: startTime, 6: eligibleAgentIds (array)
-                        # 7: winningAgentId, 8: winningBid, 9: isActive
-                        # 10: isCompleted, 11: escrowAmount, 12: reputationWeight
-                        
+
+                        # Auction struct: 0 id, 1 buyer, 2 serviceDescriptionCid, 3 maxPrice,
+                        # 4 duration, 5 startTime, 6 eligibleAgentIds, 7 winningAgentId, 8 winningBid,
+                        # 9 isActive, 10 isCompleted, 11 escrowAmount, 12 reputationWeight.
+
                         is_active = auction[9]
                         is_completed = auction[10]
                         start_time = auction[5]
                         duration = auction[4]
-                        # Index 13 is `revealDuration`. Read defensively: an
-                        # IndexError here lands in the enclosing `except` and
-                        # would silently drop the auction from the scan
-                        # altogether, which is a far worse failure than not
-                        # knowing the reveal window. Absent, the auction simply
-                        # is not classified as settled yet.
+                        # Index 13 is revealDuration. Read defensively: an IndexError would drop the
+                        # auction from the scan; without it the auction is just not classified as
+                        # settled yet.
                         reveal_duration = auction[13] if len(auction) > 13 else 0
 
-                        # `current_time` comes from the single block read above:
-                        # blockchain time, not wall clock, because on a forked or
-                        # snapshot-loaded Anvil the two are unrelated.
+                        # Block time from the single read above, not wall time.
                         end_time = start_time + duration
                         time_remaining = max(0, end_time - current_time)
 
-                        # Settled for good: no phase remains and nothing further
-                        # can be committed or revealed. Remember it so later
-                        # cycles skip it entirely.
+                        # Settled for good: nothing can be committed or revealed any more.
                         if is_completed or (
                             not is_active
                             and current_time > start_time + duration + reveal_duration
@@ -2449,7 +2242,7 @@ What you do not yet know, and what you could try next to find out."""
 
                         if not is_active or time_remaining == 0:
                             continue
-                        
+
                         auction_info = {
                             "auction_id": auction_id,
                             "buyer": auction[1],
@@ -2466,33 +2259,32 @@ What you do not yet know, and what you could try next to find out."""
                             "eligible_agent_count": len(auction[6]) if isinstance(auction[6], list) else 0,
                             "eligible_agents": [int(a) for a in auction[6]] if isinstance(auction[6], list) else [],
                         }
-                        
+
                         eligible_active_auctions.append(auction_info)
                         logger.info(f"📋 Eligible auction {auction_id}: max_price={auction[3]}, time_remaining={time_remaining}s")
-                        
+
                     except Exception as e:
                         logger.debug(f"Error checking auction {auction_id}: {e}")
                         continue
-                        
+
             except Exception as e:
                 logger.error(f"Error fetching active auctions: {e}")
-            
+
             state["eligible_active_auctions"] = eligible_active_auctions
             self._last_processed_block = current_block
 
             for auction in eligible_active_auctions:
                 self.cost_tracker.record_auction_participation(auction.get("auction_id"))
-            
-            # Pre-fetch agent's own reputation
+
             agent_reputation = await self._fetch_reputation(self.agent_id)
             self._sync_effort_quality_from_reputation(agent_reputation)
             state["agent_reputation"] = agent_reputation
             logger.info(f"📊 Agent reputation: rating={agent_reputation['rating']}, feedback_count={agent_reputation['feedback_count']}")
 
-            # Settle outcomes of past bids now that the post-auction rating is known (R1).
+            # Settle the outcomes of past bids now that the post-auction rating is known.
             self._resolve_llm_outcome_history(state)
-            
-            # Pre-fetch IPFS service requirements and embed in auction data
+
+            # Job descriptions from IPFS (live mode)
             ipfs_client = IPFSClient()
             for auction in eligible_active_auctions:
                 cid = auction.get("service_description_cid")
@@ -2518,8 +2310,8 @@ What you do not yet know, and what you could try next to find out."""
                         auction["service_requirements"] = {}
                 else:
                     auction["service_requirements"] = {}
-            
-            # Pre-fetch competitors' reputation (all eligible agents across active auctions)
+
+            # Reputations of the competitors in all eligible auctions
             competitors_reputation = []
             seen_agents = set()
             for auction in eligible_active_auctions:
@@ -2537,11 +2329,11 @@ What you do not yet know, and what you could try next to find out."""
                             "rating": comp_rep["rating"],
                             "feedback_count": comp_rep["feedback_count"]
                         })
-            
+
             state["competitors_reputation"] = competitors_reputation
             logger.info(f"👥 Fetched reputation for {len(competitors_reputation)} competitors")
-            
-            # Track financial context in state for downstream reasoning/prompting.
+
+            # Financial context, for the policy and the prompt
             execution_history = self.cost_tracker.get_execution_cost_history()
             current_balance = self.cost_tracker.get_net_balance()
             state["past_execution_costs"] = execution_history
@@ -2555,9 +2347,9 @@ What you do not yet know, and what you could try next to find out."""
                 for effort in self.cost_tracker.get_effort_levels()
             }
 
-            # Populate state based on architecture's state_level and coupling_mode
+            # State by the architecture's state_level and coupling_mode
             if self.arch_config.state_level == 0:
-                # State Level 0: Current only (no history) - Architecture 1
+                # State level 0: current state only (architecture 1)
                 state["estimated_service_cost"] = default_execution_cost
                 state["estimated_execution_cost"] = default_execution_cost
                 state["non_execution_cost_per_participation"] = 0.0
@@ -2575,7 +2367,7 @@ What you do not yet know, and what you could try next to find out."""
                     for effort in self.cost_tracker.get_effort_levels()
                 }
             elif self.arch_config.state_level >= 1:
-                # State Level 1+: Performance history (if coupling allows) - Future architectures
+                # State level 1: the agent's own performance history (architecture 2)
                 if self.coupling_mode in ["one_way", "two_way"]:
                     average_execution_cost = self.cost_tracker.get_average_execution_cost(
                         default=default_execution_cost
@@ -2592,7 +2384,7 @@ What you do not yet know, and what you could try next to find out."""
                     state["effort_level_execution_costs"] = self.cost_tracker.get_average_execution_cost_by_effort()
                     state["effort_level_execution_counts"] = self.cost_tracker.get_execution_counts_by_effort()
                     state["effort_level_quality_stats"] = self.cost_tracker.get_quality_stats_by_effort()
-                    # Win-rate stats: bids placed on-chain and auctions won (= completed jobs).
+                    # Win rate: bids committed on chain, and auctions won (= completed jobs).
                     bids_placed = self._bid_attempt_stats.get("succeeded", 0)
                     wins = self.cost_tracker.get_completed_service_count()
                     state["bids_placed_count"] = bids_placed
@@ -2614,7 +2406,7 @@ What you do not yet know, and what you could try next to find out."""
                     if getattr(self.config, "llm_reflection_enabled", False):
                         state["llm_strategy_memo"] = self._llm_strategy_memo
                 else:
-                    # Isolated coupling: no history available
+                    # Isolated coupling: no history
                     state["estimated_service_cost"] = default_execution_cost
                     state["estimated_execution_cost"] = default_execution_cost
                     state["non_execution_cost_per_participation"] = 0.0
@@ -2624,10 +2416,6 @@ What you do not yet know, and what you could try next to find out."""
                         effort: 0 for effort in self.cost_tracker.get_effort_levels()
                     }
                     state["effort_level_quality_stats"] = self.cost_tracker.get_quality_stats_by_effort()
-
-            # State Level 2+ (market history) - to be implemented for future architectures
-            # if self.arch_config.state_level >= 2:
-            #     state["past_winning_bids"] = await self._fetch_market_history()
 
             execution_cost_estimate = float(state.get("estimated_execution_cost") or 0.0)
             non_execution_cost_estimate = float(state.get("non_execution_cost_per_participation") or 0.0)
@@ -2649,19 +2437,18 @@ What you do not yet know, and what you could try next to find out."""
                 json.dumps(effort_execution_counts, sort_keys=True),
                 json.dumps(effort_quality_stats, sort_keys=True),
             )
-            
+
             logger.info(f"✅ State gathered: {len(won_auctions)} won, {len(eligible_active_auctions)} active eligible")
-            
+
         except Exception as e:
             logger.error(f"Error gathering state: {e}")
             state["error"] = str(e)
             state["won_auctions"] = []
             state["eligible_active_auctions"] = []
-        
+
         return state
-    
+
     async def _reasoning_node(self, state: AgentState) -> AgentState:
-        """Route to appropriate reasoning strategy based on reasoning_mode."""
         if self.reasoning_mode in ["deterministic", "heuristic"]:
             return await self._heuristic_reasoning(state)
         else:
@@ -2673,7 +2460,7 @@ What you do not yet know, and what you could try next to find out."""
         *,
         log_skips: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Filter auctions that still require LLM reasoning in this cycle."""
+        """The auctions the LLM still has to decide in this cycle."""
         actionable_auctions: List[Dict[str, Any]] = []
 
         for auction in eligible_auctions:
@@ -2703,7 +2490,7 @@ What you do not yet know, and what you could try next to find out."""
         return actionable_auctions
 
     async def _heuristic_reasoning(self, state: AgentState) -> AgentState:
-        """Heuristic bidding strategy with selectable approaches."""
+        """Decide and commit bids with the configured heuristic policy (and estimator)."""
         strategy = (self.config.heuristic_strategy or "random_markup").lower()
         min_margin = max(0.0, self.config.heuristic_min_margin)
         max_margin = max(min_margin, self.config.heuristic_max_margin)
@@ -2712,7 +2499,7 @@ What you do not yet know, and what you could try next to find out."""
             f"🎯 Using heuristic reasoning (strategy={strategy}, "
             f"min_margin={min_margin:.2f}, max_margin={max_margin:.2f})"
         )
-        
+
         eligible_auctions = state.get("eligible_active_auctions", [])
 
         if not eligible_auctions:
@@ -2720,7 +2507,7 @@ What you do not yet know, and what you could try next to find out."""
             state["bids_placed"] = []
             return state
 
-        # One-shot policy: only reason about auctions not yet decided this session.
+        # Decide each auction once per session.
         new_auctions = [
             a for a in eligible_auctions
             if int(a.get("auction_id", 0) or 0) not in self._decided_auctions
@@ -2743,7 +2530,6 @@ What you do not yet know, and what you could try next to find out."""
         # measure the thing it claims to measure.
         decision_time = await self._chain_timestamp()
 
-        # Reset bids tracker
         self._bids_placed = []
 
         try:
@@ -2751,18 +2537,17 @@ What you do not yet know, and what you could try next to find out."""
                 auction_id = auction["auction_id"]
                 max_price = auction["max_price"]
                 time_remaining = self._fresh_time_remaining(auction, decision_time)
-                # Mark decided upfront so every exit path (continue, exception) is covered.
+                # Marked decided first, so every exit path is covered.
                 self._decided_auctions.add(auction_id)
 
-                # Skip last-second bids that are likely to expire before inclusion
+                # Skip bids too late to be mined before the commit phase closes.
                 if time_remaining <= self._bid_freshness_min_seconds:
                     logger.info(
                         f"⏭️ Skipping auction {auction_id}: only {time_remaining}s remaining "
                         f"(gate {self._bid_freshness_min_seconds:.1f}s)"
                     )
                     continue
-                
-                # Use observable execution-cost state when available.
+
                 observed_cost_usd = self._observed_execution_cost_usd(state)
                 estimated_cost = max(1, int(round(observed_cost_usd * 1e6)))
                 profit_cost_basis = estimated_cost
@@ -2779,12 +2564,9 @@ What you do not yet know, and what you could try next to find out."""
                     # shared state dict.
                     state["_estimator_auction"] = auction
 
-                    # Arm X's estimator call happens HERE, inside the commit
-                    # window and on the running loop, not inside the synchronous
-                    # economics adapter. Measured latency by tier: gpt-4o-mini
-                    # 2.8s, gpt-oss-20b 5.0s, gpt-5.4 8.1s median — so the call
-                    # consumes a real fraction of the window and the freshness
-                    # gate has to be re-checked once it returns.
+                    # The estimator runs here, inside the commit window and on the event loop. An LLM
+                    # call takes a real fraction of the window, so the freshness gate is re-checked
+                    # when it returns.
                     await self._prepare_task_multipliers(state, auction)
                     time_remaining = self._fresh_time_remaining(
                         auction, await self._chain_timestamp()
@@ -2818,23 +2600,21 @@ What you do not yet know, and what you could try next to find out."""
                     logger.error(f"Unknown heuristic strategy '{strategy}'; not bidding")
                     continue
 
-                # Check if bid is within max_price
                 if bid_amount > max_price:
                     logger.info(
                         f"⏭️ Skipping auction {auction_id}: bid {bid_amount} exceeds max_price {max_price}"
                     )
                     continue
-                
-                # Check profitability (should always be profitable with fixed markup)
+
                 profit = bid_amount - profit_cost_basis
                 profit_margin = (profit / profit_cost_basis) * 100
-                
+
                 logger.info(
                     f"📊 Auction {auction_id}: cost={profit_cost_basis/1e6:.6f} USDC, "
                     f"bid={bid_amount/1e6:.6f} USDC, margin={profit_margin:.3f}%"
                 )
 
-                # Strict pre-bid refresh gate: if refresh fails, skip bid.
+                # Re-read the auction before bidding; skip the bid if that fails.
                 try:
                     fresh_auction = await self.client.call_contract_method(
                         "ReverseAuction",
@@ -2870,13 +2650,12 @@ What you do not yet know, and what you could try next to find out."""
                     )
                     continue
 
-                # Sealed commitments are one-time-ever per auction; this is the final
-                # authoritative gate immediately before sending the transaction.
+                # A commitment is once per auction, ever; this is the authoritative check just
+                # before sending.
                 if await self._has_committed(auction_id):
                     logger.info(f"⏭️ Skipping auction {auction_id}: already committed")
                     continue
 
-                # Commit the sealed bid
                 try:
                     resolved_bid_effort_tier = self._resolve_bid_effort_tier(selected_effort_tier)
                     result = await self._commit_bid(
@@ -2897,24 +2676,24 @@ What you do not yet know, and what you could try next to find out."""
                         mode="heuristic",
                     )
                     continue
-            
+
             state["bids_placed"] = self._bids_placed
             logger.info(f"✅ Heuristic reasoning completed: {len(self._bids_placed)} bids placed")
-            
+
         except Exception as e:
             logger.error(f"Error in deterministic reasoning: {e}")
             state["error"] = str(e)
             state["bids_placed"] = []
-        
+
         return state
-    
+
     async def _llm_react_reasoning(self, state: AgentState) -> AgentState:
-        """Use ReAct agent to reason about bidding decisions."""
+        """Decide and commit bids with the LLM price-setter."""
         logger.info("🤔 ReAct reasoning about auctions...")
-        
+
         eligible_auctions = state.get("eligible_active_auctions", [])
         actionable_auctions = self._get_llm_react_actionable_auctions(eligible_auctions)
-        
+
         if not eligible_auctions:
             logger.info("No eligible auctions to consider")
             state["bids_placed"] = []
@@ -2935,17 +2714,16 @@ What you do not yet know, and what you could try next to find out."""
             state["bids_placed"] = []
             return state
 
-        # Mark all actionable auctions decided before LLM reasoning (one-shot policy).
+        # Mark every actionable auction decided before the LLM runs.
         for a in actionable_auctions:
             self._decided_auctions.add(int(a.get("auction_id", 0) or 0))
 
-        # Desynchronize providers detecting the same new auction simultaneously.
+        # Desynchronise providers that detect the same new auction.
         jitter = self._rng.uniform(0, self._BID_JITTER_MAX_SECONDS)
         logger.info("⏳ Pre-reasoning jitter: sleeping %.2fs before LLM reasoning on %d auction(s)", jitter, len(actionable_auctions))
         await asyncio.sleep(jitter)
 
-        # R2: self-critique before deciding, so any new lesson informs this bid. No-op unless
-        # llm_reflection_enabled and `interval` bids have accrued since the last reflection.
+        # LLM-Reflect: revise the memo before deciding, so a new lesson informs this bid.
         await self._maybe_generate_reflection(state)
         if getattr(self.config, "llm_reflection_enabled", False):
             state["llm_strategy_memo"] = self._llm_strategy_memo
@@ -2961,32 +2739,28 @@ What you do not yet know, and what you could try next to find out."""
                 "eligible_active_auctions": actionable_auctions,
             }
 
-        # Reset per-cycle trackers
         self._bids_placed = []
         self._react_stop_after_bid_attempt = False
         self._bid_attempted_auctions_this_cycle = set()
         self._tool_audit_context = self._build_tool_audit_context(reasoning_state)
-        
+
         try:
             auctions_context = json.dumps(actionable_auctions, indent=2)
-            
-            # Use injected system_prompt or generate from architecture's template
+
+            # A configured system prompt, or the architecture's prompt
             if self.system_prompt is not None:
-                # Use custom prompt from config
                 prompt = self.system_prompt.format(
                     agent_id=self.agent_id,
                     auctions_context=auctions_context
                 )
                 logger.info("Using custom system prompt from config")
             else:
-                # Use architecture's prompt template
                 prompt = get_prompt(
                     architecture=self.arch_config.prompt_template,
                     agent_state=reasoning_state,
                 )
                 logger.info(f"Using {self.arch_config.name} prompt")
-            
-            # Create ReAct agent with configured LLM and cost tracking
+
             callback = LLMCostCallback(
                 cost_tracker=self.cost_tracker,
                 model=self.llm_model,
@@ -2994,7 +2768,7 @@ What you do not yet know, and what you could try next to find out."""
                 output_price_per_1k=self.config.reasoning_llm_output_price_per_1k,
                 scope="reasoning",
             )
-            
+
             llm = ChatOpenAI(
                 model=self.llm_model,
                 api_key=self.llm_api_key,
@@ -3024,8 +2798,8 @@ What you do not yet know, and what you could try next to find out."""
                     config={"recursion_limit": recursion_limit}
                 )
 
-            # Keep the model's stated reasoning for whatever it just committed to, so the next
-            # reflection can judge the reasoning and not only the outcome.
+            # Keep the model's stated reasoning for what it just committed to, for the next
+            # reflection.
             new_auction_ids = [
                 e["auction_id"] for e in self._llm_outcome_history[decisions_before:]
             ]
@@ -3035,28 +2809,25 @@ What you do not yet know, and what you could try next to find out."""
                     if m.__class__.__name__ == "AIMessage" and getattr(m, "content", None)
                 )
                 self._record_decision_rationale(ai_text, new_auction_ids)
-            
-            # Log the agent's reasoning trace
+
+            # Log the reasoning trace
             logger.info("\n" + "=" * 80)
             logger.info("🤖 AGENT REASONING TRACE")
             logger.info("=" * 80)
             for i, msg in enumerate(result["messages"], 1):
                 msg_class = msg.__class__.__name__
-                
-                # Human/System messages
+
                 if hasattr(msg, 'content') and msg.content:
                     content = str(msg.content)
                     logger.info(f"\n[{i}] {msg_class}:\n{content}")
-                
-                # AI messages with tool calls
+
                 if hasattr(msg, 'tool_calls') and msg.tool_calls:
                     logger.info(f"\n[{i}] {msg_class} - Tool Calls:")
                     for tc in msg.tool_calls:
                         tool_name = tc.get('name', 'unknown')
                         tool_args = tc.get('args', {})
                         logger.info(f"  🔧 {tool_name}({tool_args})")
-                
-                # Tool messages (results)
+
                 if msg_class == "ToolMessage":
                     tool_output = str(msg.content)[:300]
                     logger.info(f"\n[{i}] ToolMessage:\n  ✅ {tool_output}")
@@ -3068,7 +2839,7 @@ What you do not yet know, and what you could try next to find out."""
 
             state["bids_placed"] = self._bids_placed
             logger.info(f"✅ ReAct completed: {len(self._bids_placed)} bids placed")
-            
+
         except Exception as e:
             err_text = str(e)
             if "GRAPH_RECURSION_LIMIT" in err_text or "Recursion limit" in err_text:
@@ -3081,18 +2852,13 @@ What you do not yet know, and what you could try next to find out."""
             state["error"] = err_text
             state["bids_placed"] = []
         finally:
-            # Avoid stale cross-cycle context
+            # No context carries over between cycles.
             self._tool_audit_context = {}
-        
+
         return state
-    
+
     async def monitor_auctions(self) -> Dict[str, Any]:
-        """
-        Monitor blockchain for auctions and make bidding decisions.
-        
-        Returns:
-            Dictionary with won_auctions, bids_placed, and any errors
-        """
+        """One monitoring cycle: returns the won auctions, the bids placed and any errors."""
         initial_state: AgentState = {
             "agent_id": self.agent_id,
             "action": "monitor",
@@ -3121,7 +2887,6 @@ What you do not yet know, and what you could try next to find out."""
 
         result = await self.graph.ainvoke(initial_state)
 
-        # Log cost summary after monitoring cycle
         self.cost_tracker.log_summary()
 
         return {
@@ -3142,7 +2907,7 @@ What you do not yet know, and what you could try next to find out."""
         error_code: Optional[str] = None,
         mode: Optional[str] = None,
     ) -> None:
-        """Track bid attempt outcomes for runtime status reporting."""
+        """Count a bid attempt's outcome, for the status file."""
         if error == "attempt_started":
             self.cost_tracker.record_auction_participation(auction_id)
             self._bid_attempt_stats["attempted"] += 1
@@ -3167,25 +2932,16 @@ What you do not yet know, and what you could try next to find out."""
             self._bid_failures = self._bid_failures[-200:]
 
     def get_bidding_metrics(self) -> Dict[str, Any]:
-        """Return cumulative runtime bidding metrics for status snapshots."""
+        """Cumulative bidding counts, for the status file."""
         return {
             "attempted": int(self._bid_attempt_stats.get("attempted", 0)),
             "succeeded": int(self._bid_attempt_stats.get("succeeded", 0)),
             "failed": int(self._bid_attempt_stats.get("failed", 0)),
             "recent_failures": self._bid_failures[-50:],
         }
-    
+
     async def complete_service(self, auction_id: int, client_address: str) -> Dict[str, Any]:
-        """
-        Complete service for an auction.
-        
-        Args:
-            auction_id: The auction ID to complete
-            client_address: The buyer's address
-            
-        Returns:
-            Dictionary with tx_hash, feedback_auth, and any errors
-        """
+        """Complete a won job on chain; returns the transaction hash and the feedbackAuth."""
         initial_state: AgentState = {
             "agent_id": self.agent_id,
             "action": "complete_service",
@@ -3219,4 +2975,3 @@ What you do not yet know, and what you could try next to find out."""
             "feedback_auth": result.get("feedback_auth"),
             "error": result.get("error")
         }
-    

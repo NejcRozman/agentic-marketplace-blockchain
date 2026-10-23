@@ -54,23 +54,23 @@ class AuctionTracker:
     reveal_duration: int
     eligible_providers: List[int]
     reputation_weight: int = 0
-    
+
     winning_agent_id: Optional[int] = None
     winning_bid: Optional[int] = None
     ended_at: Optional[datetime] = None
     ended_block: Optional[int] = None
-    
+
     result_path: Optional[Path] = None
     result: Optional[Dict[str, Any]] = None
     completed_at: Optional[datetime] = None
     evaluation_started_at: Optional[datetime] = None
     evaluation_completed_at: Optional[datetime] = None
     feedback_submitted_at: Optional[datetime] = None
-    
+
     evaluation: Optional[Dict[str, Any]] = None
     feedback_submitted: bool = False
     service_metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     error: Optional[str] = None
     retry_count: int = 0
     max_retries: int = 3
@@ -78,7 +78,7 @@ class AuctionTracker:
 
 class Consumer:
     """The consumer agent: one auction at a time, from creation to rating."""
-    
+
     def __init__(self, config: Config):
         self.config = config
 
@@ -94,14 +94,14 @@ class Consumer:
         self.ipfs_client = IPFSClient(config)
         self.service_generator = ServiceGenerator(config)
         self.evaluator = ServiceEvaluator(config)
-        
+
         self.active_auctions: Dict[int, AuctionTracker] = {}
         self.completed_auctions: List[AuctionTracker] = []
-        
+
         self.available_services: List[Dict[str, Any]] = []
         self.service_index: int = 0
         self._sampled_dataset_sampler: Optional[DatasetSampler] = None
-        
+
         self.running = False
         configured_interval = getattr(config, "check_interval", config.consumer_check_interval)
         self.check_interval = float(configured_interval)
@@ -273,20 +273,20 @@ class Consumer:
             "sampled_artifact_dir": sampled_dataset.get("artifact_dir"),
             "error": tracker.error or evaluation_error,
         }
-    
+
     async def initialize(self, pdf_dir: Optional[Path] = None):
         """Connect to the chain and load the jobs (generating them from ``pdf_dir`` in the live mode)."""
         logger.info("Initializing consumer components...")
-        
+
         success = await self.blockchain_handler.initialize()
         if not success:
             raise RuntimeError("Failed to initialize consumer blockchain handler")
-        
+
         if pdf_dir is not None or self._is_sampled_dataset_mode():
             await self.load_services(pdf_dir)
-        
+
         logger.info("✅ Consumer initialized successfully")
-    
+
     async def load_services(self, pdf_dir: Optional[Path]):
         """Load the jobs: from the dataset, or generated from the PDFs and abstracts in ``pdf_dir``."""
         if self._is_sampled_dataset_mode():
@@ -351,7 +351,7 @@ class Consumer:
             resolved_sampling_iterations,
             resolved_sampling_seed,
         )
-        
+
         result = await self.service_generator.generate_services_from_pdfs(
             pdf_dir=pdf_dir,
             skip_processed=True,
@@ -360,16 +360,16 @@ class Consumer:
             sampling_iterations=resolved_sampling_iterations,
             sampling_seed=resolved_sampling_seed,
         )
-        
+
         self.available_services = result["processed"]
         self.service_index = 0
-        
+
         logger.info(f"✅ Loaded {len(self.available_services)} services")
         if result["failed"]:
             logger.warning(f"⚠️  {len(result['failed'])} services failed to generate")
         if result["skipped"]:
             logger.info(f"⏭️  {len(result['skipped'])} services skipped (already processed)")
-    
+
     async def create_auction(
         self,
         service_index: Optional[int] = None,
@@ -391,7 +391,7 @@ class Consumer:
             reveal_duration = self.config.reveal_duration
 
         logger.info("📝 Creating new auction...")
-        
+
         if not self.available_services:
             if self._is_sampled_dataset_mode():
                 await self.load_services(None)
@@ -400,7 +400,7 @@ class Consumer:
             raise RuntimeError(
                 "No services available. Call load_services(pdf_dir) or initialize(pdf_dir) first."
             )
-        
+
         if service_index is None:
             selection_mode = self._get_service_selection_mode()
             if selection_mode == "shuffled_pass":
@@ -419,19 +419,19 @@ class Consumer:
                     f"Must be between 0 and {len(self.available_services) - 1}"
                 )
             idx = service_index
-        
+
         service_data = self.available_services[idx]
         service_cid = service_data["service_cid"]
-        
+
         logger.info(f"Using service: {service_data['title']}")
         logger.info(f"Service CID: {service_cid}")
-        
+
         if eligible_providers is None:
             if hasattr(self.config, 'provider_pool') and self.config.provider_pool:
                 # Random draw from the provider pool
                 pool = self.config.provider_pool
                 count = getattr(self.config, 'eligible_per_auction', len(pool))
-                
+
                 if count >= len(pool):
                     eligible_providers = pool
                     logger.info(f"Using all {len(pool)} providers from pool")
@@ -443,7 +443,7 @@ class Consumer:
                 logger.info(f"Using static eligible providers: {eligible_providers}")
         else:
             logger.info(f"Using explicitly provided eligible providers: {eligible_providers}")
-        
+
         logger.info(
             f"Creating auction on blockchain (budget: {max_budget}, "
             f"commit_duration: {commit_duration}s, reveal_duration: {reveal_duration}s)..."
@@ -457,15 +457,15 @@ class Consumer:
             eligible_agent_ids=eligible_providers,
             reputation_weight=self.config.reputation_weight
         )
-        
+
         if result['error']:
             raise RuntimeError(f"Failed to create auction: {result['error']}")
-        
+
         auction_id = result['auction_id']
         tx_hash = result['tx_hash']
-        
+
         logger.info(f"✓ Auction created on blockchain: ID={auction_id}, tx={tx_hash}")
-        
+
         tracker = AuctionTracker(
             auction_id=auction_id,
             status=AuctionStatus.CREATED,
@@ -478,28 +478,28 @@ class Consumer:
             reputation_weight=self.config.reputation_weight,
             service_metadata=copy.deepcopy(service_data.get("service_metadata") or {}),
         )
-        
+
         self.active_auctions[auction_id] = tracker
-        
+
         logger.info(f"✅ Auction {auction_id} created")
         return auction_id
-    
+
     async def monitor_auctions(self):
         """Advance every tracked auction: end it after its reveal phase, then collect, rate and give feedback."""
         if not self.blockchain_handler._initialized:
             logger.warning("Blockchain handler not initialized, skipping monitoring")
             return
-        
+
         for auction_id, tracker in list(self.active_auctions.items()):
             try:
                 auction_data = await self.blockchain_handler.get_auction_status(auction_id)
-                
+
                 if auction_data.get('error'):
                     logger.error(f"Error getting auction status: {auction_data['error']}")
                     continue
-                
+
                 is_active = auction_data['active']
-                
+
                 if not is_active and tracker.status in [AuctionStatus.CREATED, AuctionStatus.ACTIVE]:
                     current_block = await self.blockchain_handler.client.get_block_number()
                     logger.info(f"🏁 Auction {auction_id} has ended")
@@ -520,7 +520,7 @@ class Consumer:
                         tracker.error = "Auction ended without winner"
                         self._finalize_terminal_auction(tracker)
                         continue
-                    
+
                 elif is_active:
                     tracker.status = AuctionStatus.ACTIVE
 
@@ -532,44 +532,44 @@ class Consumer:
                     if phase == AUCTION_PHASE_ENDED:
                         logger.info(f"⏰ Ending auction {auction_id} (commit+reveal phases expired)")
                         await self.end_auction(auction_id)
-                
+
                 is_completed = auction_data.get('completed', False)
                 if is_completed and tracker.status == AuctionStatus.ENDED and not tracker.result_path:
                     logger.info(f"✅ Service {auction_id} completed by provider")
                     tracker.status = AuctionStatus.COMPLETED
                     tracker.completed_at = datetime.now()
                     await self._retrieve_result(tracker)
-                    
+
             except Exception as e:
                 logger.error(f"Error monitoring auction {auction_id}: {e}")
                 tracker.error = str(e)
-    
+
     async def end_auction(self, auction_id: int):
         logger.info(f"Ending auction {auction_id}...")
-        
+
         result = await self.blockchain_handler.end_auction(auction_id)
-        
+
         if result['error']:
             logger.error(f"Failed to end auction: {result['error']}")
             return
-        
+
         logger.info(f"✓ Auction ended: tx={result['tx_hash']}, winner={result['winning_agent_id']}")
-    
+
     async def _retrieve_result(self, tracker: AuctionTracker):
         """Read the winner's result from the shared jobs directory and rate it."""
         logger.info(f"📥 Retrieving result for auction {tracker.auction_id}...")
-        
+
         # The winner writes the result to {result_base_path}/auction_{id}/result.json.
         result_path = self.result_base_path / f"auction_{tracker.auction_id}" / "result.json"
-        
+
         if not result_path.exists():
             logger.warning(f"Result file not found: {result_path}")
             tracker.error = "Result file not found"
             return
-        
+
         tracker.result_path = result_path
         logger.info(f"✓ Result retrieved from {result_path}")
-        
+
         with open(result_path, 'r') as f:
             tracker.result = json.load(f)
 
@@ -589,9 +589,9 @@ class Consumer:
             if sampled_metadata.get("quality_method"):
                 merged_metadata["quality_method"] = str(sampled_metadata.get("quality_method"))
             tracker.service_metadata = merged_metadata
-        
+
         await self._evaluate_result(tracker)
-    
+
     async def _evaluate_result(self, tracker: AuctionTracker):
         """Rate a result: the recorded rating in the dataset mode, the LLM judge in the live mode."""
         logger.info(f"🔍 Evaluating result for auction {tracker.auction_id}...")
@@ -615,16 +615,16 @@ class Consumer:
             logger.info(f"✓ Sampled evaluation loaded: rating={evaluation.get('rating')}/100")
             await self._submit_feedback(tracker)
             return
-        
+
         service_requirements = await self.ipfs_client.fetch_json(tracker.service_cid, retry_for=180)
-        
+
         tracker.evaluation_started_at = datetime.now()
         evaluation = await self.evaluator.evaluate(
             service_requirements=service_requirements,
             result=tracker.result
         )
         tracker.evaluation_completed_at = datetime.now()
-        
+
         tracker.evaluation = evaluation
         tracker.status = AuctionStatus.EVALUATED
 
@@ -641,17 +641,17 @@ class Consumer:
             if tracker.auction_id in self.active_auctions:
                 del self.active_auctions[tracker.auction_id]
             return
-        
+
         logger.info(f"✓ Evaluation complete: rating={evaluation['rating']}/100")
         if evaluation.get('quality_scores'):
             logger.info(f"  Quality scores: {evaluation['quality_scores']}")
-        
+
         await self._submit_feedback(tracker)
-    
+
     async def _submit_feedback(self, tracker: AuctionTracker):
         """Submit the rating to the Reputation Registry, once the winner's feedbackAuth is on chain."""
         logger.info(f"📤 Submitting feedback for auction {tracker.auction_id}...")
-        
+
         try:
             rating = tracker.evaluation.get('rating') if tracker.evaluation else None
             if not isinstance(rating, int):
@@ -675,7 +675,7 @@ class Consumer:
                 from_block=from_block,
                 lookback_blocks=1000  # used when ended_block is unknown
             )
-            
+
             if not feedback_auth:
                 logger.error(f"FeedbackAuthProvided event not found for auction {tracker.auction_id}; skipping feedback")
                 tracker.error = "FeedbackAuthProvided event not found"
@@ -683,7 +683,7 @@ class Consumer:
                 tracker.status = AuctionStatus.COMPLETED
                 self._finalize_terminal_auction(tracker)
                 return
-            
+
             quality_scores = tracker.evaluation.get('quality_scores', {})
             if quality_scores:
                 feedback_text = ", ".join(
@@ -691,7 +691,7 @@ class Consumer:
                 )
             else:
                 feedback_text = f"Rating: {tracker.evaluation['rating']}/100"
-            
+
             # feedback_auth only shows that the winner completed the job; giveFeedback itself
             # takes no auth parameter.
             result = await self.blockchain_handler.submit_feedback(
@@ -700,7 +700,7 @@ class Consumer:
                 rating=rating,
                 feedback_text=feedback_text,
             )
-            
+
             if result['error'] is not None:
                 logger.error(f"Failed to submit feedback: {result['error']}")
                 tracker.error = result['error']
@@ -708,14 +708,14 @@ class Consumer:
                 tracker.status = AuctionStatus.COMPLETED
                 self._finalize_terminal_auction(tracker)
                 return
-            
+
             tracker.feedback_submitted = True
             tracker.feedback_submitted_at = datetime.now()
             logger.info(f"✓ Feedback submitted: tx={result['tx_hash']}")
-            
+
             tracker.status = AuctionStatus.COMPLETED
             self._finalize_terminal_auction(tracker)
-            
+
         except Exception as e:
             logger.error(f"Error submitting feedback: {e}")
             tracker.error = str(e)
@@ -726,22 +726,22 @@ class Consumer:
             self.completed_auctions.append(tracker)
         if tracker.auction_id in self.active_auctions:
             del self.active_auctions[tracker.auction_id]
-    
+
     async def run(self):
         logger.info("Starting consumer agent...")
         self.running = True
-        
+
         try:
             while self.running:
                 await self.monitor_auctions()
-                
+
                 await asyncio.sleep(self._next_check_delay())
-                
+
         except Exception as e:
             logger.error(f"Consumer agent error: {e}", exc_info=True)
         finally:
             logger.info("Consumer agent stopped")
-    
+
     def stop(self):
         logger.info("Stopping consumer agent...")
         self.running = False
@@ -755,7 +755,7 @@ class Consumer:
             return base_interval
 
         return max(0.1, base_interval + self._rng.uniform(-jitter, jitter))
-    
+
     def get_status(self) -> Dict[str, Any]:
         failed_auctions = sum(1 for t in self.completed_auctions if t.status == AuctionStatus.FAILED)
         tracked_auctions: Dict[int, Dict[str, Any]] = {}
@@ -769,7 +769,7 @@ class Consumer:
             "running": self.running,
             "auctions": [tracked_auctions[auction_id] for auction_id in sorted(tracked_auctions.keys())],
         }
-    
+
     def write_status(self, status_file: Path):
         """Write the status file the runner reads."""
         try:
@@ -842,21 +842,21 @@ async def main(args):
         config.service_generation_iterations = max(1, int(args.service_generation_iterations))
     if args.service_generation_seed is not None:
         config.service_generation_seed = int(args.service_generation_seed)
-    
+
     consumer = Consumer(config)
     logger.info(
         "Consumer runtime polling: "
         f"check_interval={consumer.check_interval}, "
         f"check_interval_jitter={consumer.check_interval_jitter}"
     )
-    
+
     pdf_dir = Path(config.pdf_directory) if config.pdf_directory and config.auto_create_auction else None
     await consumer.initialize(pdf_dir=pdf_dir)
-    
+
     status_file = Path(args.status_file) if args.status_file else None
 
     _install_graceful_shutdown()
-    
+
     auctions_created = 0
     consecutive_creation_failures = 0
     MAX_CONSECUTIVE_CREATION_FAILURES = 5
@@ -868,7 +868,7 @@ async def main(args):
             if config.auction_creation_delay > 0:
                 logger.info(f"⏳ Waiting {config.auction_creation_delay}s before creating first auction...")
                 await asyncio.sleep(config.auction_creation_delay)
-            
+
             logger.info("🎬 Creating initial auction...")
             try:
                 auction_id = await consumer.create_auction(
@@ -881,28 +881,28 @@ async def main(args):
             except Exception as e:
                 logger.error(f"❌ Failed to create initial auction: {e}")
                 raise
-        
+
         if status_file:
             consumer.write_status(status_file)
-        
+
         consumer.running = True
         while consumer.running:
             await consumer.monitor_auctions()
-            
+
             # Sequential creation: the next auction starts when the previous one is terminal
             if config.auto_create_auction and auctions_created < config.num_auctions:
                 # Terminal auctions (completed or failed) count, so a round without bids does not block.
                 completed_count = len(consumer.completed_auctions)
-                
+
                 logger.debug(f"Status check: completed={completed_count}, created={auctions_created}, target={config.num_auctions}")
-                
+
                 if completed_count >= auctions_created:
                     logger.info(f"✅ Auction {auctions_created} completed. Creating next auction...")
-                    
+
                     if config.inter_auction_delay > 0:
                         logger.info(f"⏳ Waiting {config.inter_auction_delay}s before next auction...")
                         await asyncio.sleep(config.inter_auction_delay)
-                    
+
                     try:
                         auction_id = await consumer.create_auction(
                             max_budget=config.max_budget,
@@ -929,17 +929,17 @@ async def main(args):
                         )
                         logger.info(f"⏳ Backing off {backoff_seconds}s before retrying auction creation...")
                         await asyncio.sleep(backoff_seconds)
-            
-            if (config.auto_create_auction and 
+
+            if (config.auto_create_auction and
                 len(consumer.completed_auctions) >= config.num_auctions):
                 logger.info(f"🎯 All {config.num_auctions} auctions completed!")
                 consumer.stop()
-            
+
             if status_file:
                 consumer.write_status(status_file)
-            
+
             await asyncio.sleep(consumer._next_check_delay())
-            
+
     except KeyboardInterrupt:
         logger.info("Received interrupt signal")
     finally:
@@ -967,7 +967,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--status-file", type=str, help="Path to write status JSON file")
     parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
-    
+
     # Automatic auctions
     parser.add_argument("--auto-create-auction", action="store_true", help="Automatically create auction(s) on startup")
     parser.add_argument("--num-auctions", type=int, help="Number of auctions to create sequentially")
@@ -995,12 +995,12 @@ if __name__ == "__main__":
         type=int,
         help="Optional random seed for deterministic service sampling",
     )
-    
+
     args = parser.parse_args()
-    
+
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-    
+
     asyncio.run(main(args))

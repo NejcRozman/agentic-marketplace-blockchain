@@ -40,16 +40,9 @@ class JobOutcome:
 
 
 def surface_features(requirement: Mapping) -> Optional[Dict[str, float]]:
-    """The three countable features, from a dataset requirement record.
+    """The three countable features of a request: total prompt length, PDF count, prompt count.
 
-    Deliberately mechanical — no reading, no model. ``total_prompt_chars`` is
-    the summed length of the prompts, and the other two are counts. An agent in
-    a deployed system would compute exactly these from the service description
-    it was sent.
-
-    Returns ``None`` when the record cannot supply them, which makes the arm
-    fall through to its plain history beliefs: an agent cannot regress on
-    features it cannot compute.
+    None when the record cannot supply them; the estimator then bids its history.
     """
     if not requirement:
         return None
@@ -96,10 +89,10 @@ class OracleCostEstimator:
         self.degraded[reason] = self.degraded.get(reason, 0) + 1
 
     def remember_features(self, requirement_id: str, requirement: Mapping) -> None:
-        """No-op. The oracle needs no features; it is handed the answer."""
+        """No-op: the oracle needs no features."""
 
     def record_outcome(self, requirement_id: str, effort_tier: str, realized_cost_usd: float) -> None:
-        """Recorded for reporting parity only — the oracle never learns."""
+        """Recorded for reporting only; the oracle never learns."""
         self.outcomes.append(JobOutcome(str(requirement_id), str(effort_tier), float(realized_cost_usd)))
 
     def _load_truth(self) -> None:
@@ -132,10 +125,8 @@ class OracleCostEstimator:
     ) -> Tuple[float, Dict[str, object]]:
         """``true_mean / level``, so ``level x multiplier`` is the true mean.
 
-        Returns 1.0 — bid the history, as Adaptive does — if the requirement is
-        absent from the dataset, rather than inventing a number. That should
-        never happen when the arm is pointed at the dataset the market draws
-        from, and it is counted in ``degraded`` if it does.
+        Returns 1.0 (the history, as Adaptive bids) if the request is not in the dataset,
+        counted in ``degraded``.
         """
         self._load_truth()
         if tier_level_usd <= 0:
@@ -227,12 +218,9 @@ class RegressionCostEstimator:
 
 
 async def _within_deadline(awaitable, deadline_seconds: Optional[float]):
-    """Await `awaitable`, cancelling it if `deadline_seconds` elapses.
+    """Await ``awaitable``, cancelling it after ``deadline_seconds`` (None: no limit).
 
-    ``None`` means unbounded, which is what the offline probes want. A live
-    caller always passes a budget: an estimate that arrives after the commit
-    window has closed cannot be bid on, so waiting for it only costs the agent
-    the auctions it would otherwise have entered.
+    An estimate that arrives after the commit window has closed cannot be bid on.
     """
     if deadline_seconds is None:
         return await awaitable
@@ -316,7 +304,7 @@ class DecomposedCostEstimator:
     def record_outcome(
         self, requirement_id: str, effort_tier: str, realized_cost_usd: float
     ) -> None:
-        """Close the loop: pair what was predicted with what it actually cost."""
+        """Pair a completed job's predicted depths with what it actually cost."""
         self.outcomes.append(
             JobOutcome(str(requirement_id), str(effort_tier), float(realized_cost_usd))
         )
@@ -343,10 +331,10 @@ class DecomposedCostEstimator:
         self, requirement_id: str, tier: str, tier_level_usd: float,
         deadline_seconds: Optional[float] = None,
     ) -> Tuple[float, Dict[str, object]]:
-        """One estimator call. Returns 1.0 — pure heuristic — on any degradation.
+        """One estimator call; returns 1.0 (the heuristic) on any failure.
 
-        ``deadline_seconds`` bounds the call to what is left of the commit
-        window; see :data:`ESTIMATOR_DEADLINE_RESERVE_SECONDS`.
+        ``deadline_seconds`` bounds the call to what is left of the commit window (see
+        :data:`ESTIMATOR_DEADLINE_RESERVE_SECONDS`).
         """
         from agents.provider.estimation import llm_client
         from agents.provider.estimation import prompt as estimation_prompt
@@ -394,7 +382,7 @@ class DecomposedCostEstimator:
             )
             self._degrade("deadline_exceeded")
             return 1.0, {"reason": "deadline_exceeded", "deadline_s": deadline_seconds}
-        except Exception as e:                              # transport, parse, other
+        except Exception as e:  # transport, parse or other error
             self.calls_failed += 1
             logger.warning("🤖 decomposed call failed (%s); bidding history", e)
             self._degrade("call_failed")
@@ -433,9 +421,8 @@ class DecomposedCostEstimator:
             return 1.0, {**diagnostics, "reason": "bad_rounds"}
 
         sum_rounds = float(sum(rounds))
-        # Recorded before any decision about bidding: the realised cost will pair
-        # with it at completion, and that pairing is what bootstraps the fit. An
-        # auction the agent loses simply never closes the pair.
+        # Recorded before the bidding decision; it pairs with the realised cost if the
+        # agent wins and completes the job.
         self.pending_rounds[(str(requirement_id), str(tier))] = (n_prompts, sum_rounds)
         diagnostics["sum_rounds"] = round(sum_rounds, 2)
         # The per-prompt vector, not just its sum: the dataset records how many
@@ -443,7 +430,7 @@ class DecomposedCostEstimator:
         diagnostics["prompt_rounds"] = [round(float(r), 2) for r in rounds]
 
         if fit is None:
-            # Depths in hand, no way to price them yet. Bid the heuristic.
+            # Depths in hand but no fit yet: bid the heuristic.
             self._degrade("cold_start")
             return 1.0, {**diagnostics, "reason": "cold_start"}
 

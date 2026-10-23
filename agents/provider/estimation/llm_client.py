@@ -86,7 +86,7 @@ def model_by_key(key: str, roster: Sequence[PinnedModel] = MODELS) -> PinnedMode
 
 @dataclass
 class Estimate:
-    """A parsed, bounded estimate — or a flagged failure standing in for one."""
+    """A parsed, bounded estimate, or a flagged failure standing in for one."""
 
     cost_multiplier: Dict[str, float]
     quality_delta: Dict[str, float]
@@ -101,11 +101,9 @@ class Estimate:
 
     @classmethod
     def fallback(cls, status: str) -> "Estimate":
-        """The pre-specified stand-in: B0's answer, flagged as a failure.
+        """The stand-in for a failed call: multiplier 1.0, flagged as a failure.
 
-        Costs the arm exactly what not asking would have cost it — no more, so
-        a failure is not punished beyond its information content; no less, so a
-        model cannot improve its score by declining hard requirements.
+        It costs the agent exactly what not asking would have.
         """
         return cls(
             cost_multiplier={t: 1.0 for t in ("low", "medium", "high")},
@@ -118,7 +116,7 @@ class Estimate:
 
 @dataclass
 class CallResult:
-    """One completed call: the estimate plus what it cost to get it."""
+    """One completed call: the estimate and what it cost."""
 
     probe_id: str
     model_key: str
@@ -144,21 +142,10 @@ _REFUSAL_MARKERS = (
 def parse_estimate(content: str) -> Estimate:
     """Turn raw model output into an :class:`Estimate`, repairing what is fixable.
 
-    The repair ladder, in order, each step attempted only if the previous
-    failed:
-
-    1. ``json.loads`` on the whole response — what a compliant structured
-       output gives.
-    2. ``json.loads`` on the first ``{...}`` span, which recovers responses
-       wrapped in prose or a markdown fence.
-    3. ``ast.literal_eval`` on that span, which recovers Python-style output
-       (single quotes, ``True``) that is otherwise well-formed.
-
-    Anything surviving that is malformed and returns a flagged fallback. Note
-    that a *refusal* is classified separately from a *malformed* response: they
-    have the same consequence for scoring but very different meanings for the
-    report, and lumping them together would hide a model that systematically
-    declines to estimate.
+    Tried in order: ``json.loads`` on the whole response; on the first ``{...}`` span
+    (prose or a markdown fence around it); ``ast.literal_eval`` on that span
+    (Python-style output). Anything else is a flagged fallback; a refusal is
+    classified separately from a malformed answer.
     """
     text = (content or "").strip()
     if not text:
@@ -204,7 +191,7 @@ def _try_literal(text: str) -> Optional[Any]:
 
 
 def _coerce(payload: Mapping[str, Any], status: str) -> Estimate:
-    """Validate structure and apply the pre-specified bounds."""
+    """Validate the structure and apply the bounds."""
     clamped: List[str] = []
 
     def bounded(value: Any, low: float, high: float, label: str) -> float:
@@ -274,9 +261,8 @@ def live_cache_key(
 class OpenRouterProbe:
     """Issues estimator calls and caches them.
 
-    Cost is taken from OpenRouter's own ``usage`` block (requested with
-    ``include: true``) rather than reconstructed from token counts and a price
-    table.
+    The cost is OpenRouter's own ``usage`` block (requested with ``include: true``),
+    not a reconstruction from tokens and a price table.
     """
 
     def __init__(
@@ -301,8 +287,7 @@ class OpenRouterProbe:
         self.calls_made = 0
         self.calls_cached = 0
 
-    # -- public ------------------------------------------------------------
-
+    # --- Public ---
     async def call_live(
         self,
         model: PinnedModel,
@@ -348,8 +333,7 @@ class OpenRouterProbe:
         async with aiohttp.ClientSession() as owned:
             return await self._one(owned, **request)
 
-    # -- internals ---------------------------------------------------------
-
+    # --- Internals ---
     async def _one(
         self,
         session: aiohttp.ClientSession,
@@ -405,9 +389,8 @@ class OpenRouterProbe:
                     record["usage"] = data.get("usage") or {}
                     self.calls_made += 1
                     self.spend_usd += float(record["usage"].get("cost") or 0.0)
-                    # A response that arrived but does not parse is retried too:
-                    # the failure is as likely to be a truncated stream as a
-                    # model that genuinely cannot answer.
+                    # A response that does not parse is retried too: a truncated stream is as likely
+                    # as a model that cannot answer.
                     check = (parser or parse_estimate)(record["content"])
                     if not check.failed:
                         break
@@ -417,7 +400,7 @@ class OpenRouterProbe:
                         "unparseable response (%s, %s, repeat %d), attempt %d/%d",
                         model.key, probe_id, repeat, attempt, MAX_ATTEMPTS,
                     )
-                except Exception as exc:  # transport, HTTP, or shape error
+                except Exception as exc:  # transport, HTTP or shape error
                     if attempt == MAX_ATTEMPTS:
                         logger.error(
                             "call failed after %d attempts (%s, %s): %s",
@@ -465,8 +448,7 @@ class OpenRouterProbe:
             cached=cached,
         )
 
-    # -- cache -------------------------------------------------------------
-
+    # --- Cache ---
     def _cache_path(self, key: str) -> Path:
         return self._cache_dir / f"{key}.json"
 
@@ -477,8 +459,7 @@ class OpenRouterProbe:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            # A truncated cache file is not worth a crash; re-fetching costs
-            # one call and removes the ambiguity.
+            # A truncated cache file is fetched again rather than raising.
             return None
 
     def _write_cache(self, key: str, record: Mapping[str, Any]) -> None:

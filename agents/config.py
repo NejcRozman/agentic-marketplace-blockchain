@@ -21,31 +21,30 @@ CONSUMER_LLM_DEFAULT = "openai/gpt-5.4-mini"
 
 class Config:
     """Settings of one agent process."""
-    
+
     def __init__(self):
-        
         # OpenRouter
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        
+
         # Pinata (IPFS)
         self.pinata_api_key = os.getenv("PINATA_API_KEY")
         self.pinata_api_secret = os.getenv("PINATA_API_SECRET")
         self.pinata_jwt = os.getenv("PINATA_JWT")
-        
+
         # Chain
         self.rpc_url = os.getenv("BLOCKCHAIN_RPC_URL", "http://localhost:8545")
         self.chain_id = int(os.getenv("BLOCKCHAIN_CHAIN_ID", "31337"))
         self.private_key = os.getenv("BLOCKCHAIN_PRIVATE_KEY")
         self.gas_limit = int(os.getenv("BLOCKCHAIN_GAS_LIMIT", "3000000"))
-        
+
         # Contract addresses, set by the runner after deployment
         self.reverse_auction_address = os.getenv("BLOCKCHAIN_REVERSE_AUCTION_ADDRESS")
         self.identity_registry_address = os.getenv("BLOCKCHAIN_IDENTITY_REGISTRY_ADDRESS")
         self.reputation_registry_address = os.getenv("BLOCKCHAIN_REPUTATION_REGISTRY_ADDRESS")
         self.payment_token_address = os.getenv("BLOCKCHAIN_PAYMENT_TOKEN_ADDRESS")  # mock USDC
         self.initial_reputation_default = int(os.getenv("BLOCKCHAIN_INITIAL_REPUTATION_DEFAULT", "50"))
-        
+
         self.agent_id = int(os.getenv("BLOCKCHAIN_AGENT_ID", "4427"))
 
         # The decline rule.
@@ -87,13 +86,13 @@ class Config:
         self.eligible_providers = [int(id.strip()) for id in eligible_str.split(",") if id.strip()]
         self.consumer_check_interval = float(os.getenv("CONSUMER_CHECK_INTERVAL", "5"))
         self.consumer_check_interval_jitter = float(os.getenv("CONSUMER_CHECK_INTERVAL_JITTER", "0.0"))
-        
+
         # Optional random selection of the eligible providers
         pool_str = os.getenv("PROVIDER_POOL", "")
         self.provider_pool = [int(id.strip()) for id in pool_str.split(",") if id.strip()]
         eligible_per_auction_str = os.getenv("ELIGIBLE_PER_AUCTION", "")
         self.eligible_per_auction = int(eligible_per_auction_str) if eligible_per_auction_str else None
-        
+
         # Automatic auction creation
         self.auto_create_auction = os.getenv("AUTO_CREATE_AUCTION", "false").lower() == "true"
         self.num_auctions = int(os.getenv("NUM_AUCTIONS", "1"))
@@ -166,9 +165,9 @@ class Config:
         self.commit_duration = int(os.getenv("COMMIT_DURATION", "1800"))  # seconds
         self.reveal_duration = int(os.getenv("REVEAL_DURATION", "300"))  # seconds
         self.reputation_weight = int(os.getenv("REPUTATION_WEIGHT", "30"))  # 0-100: weight of reputation in the score
-        
+
         self.workspace_dir = os.getenv("WORKSPACE_DIR", "./workspaces")
-        
+
         # RAG parameters
         self.rag_temperature = float(os.getenv("RAG_TEMPERATURE", "0.3"))
         self.rag_retrieval_k = int(os.getenv("RAG_RETRIEVAL_K", "3"))
@@ -176,7 +175,7 @@ class Config:
         self.rag_chunk_overlap = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))
         self.service_recursion_limit = int(os.getenv("SERVICE_RECURSION_LIMIT", "25"))
         self.react_recursion_limit = int(os.getenv("REACT_RECURSION_LIMIT", "20"))
-        
+
         # Provider bidding
         self.initial_service_execution_cost = float(os.getenv("INITIAL_SERVICE_EXECUTION_COST", "5"))
         self.initial_service_execution_cost_by_effort = {
@@ -294,7 +293,7 @@ class Config:
             1.0,
             max(0.0, float(os.getenv("NON_EXECUTION_COST_EMA_ALPHA", "0.20"))),
         )
-        
+
         # Gas
         self.gas_cost_mode = os.getenv("GAS_COST_MODE", "receipt")  # "receipt" or "fixed"
         self.gas_price_gwei = float(os.getenv("GAS_PRICE_GWEI", "20.0"))
@@ -324,11 +323,11 @@ class Config:
         self.consumer_llm_output_price_per_1k = float(
             os.getenv("CONSUMER_LLM_OUTPUT_PRICE_PER_1K", str(self.service_llm_output_price_per_1k))
         )
-        
+
         self.coupling_mode = os.getenv("COUPLING_MODE", "isolated")  # "isolated", "one_way" or "two_way"
-        
+
         self.architecture = os.getenv("ARCHITECTURE", "1")
-        
+
         # Search budget per effort tier
         self.service_max_tool_calls_by_effort = {
             "low": int(os.getenv("SERVICE_MAX_TOOL_CALLS_LOW", "1")),
@@ -360,10 +359,10 @@ class Config:
             "high": int(os.getenv("SERVICE_RETRIEVAL_K_HIGH", str(self.rag_retrieval_k))),
         }
         self.default_effort_tier = "medium"
-        
+
         self.environment = os.getenv("ENVIRONMENT", "development")
         self.debug = os.getenv("DEBUG", "true").lower() == "true"
-    
+
     def get_initial_service_execution_cost_for_effort(self, effort_tier: str = None) -> float:
         """The execution-cost prior for an effort tier."""
         normalized = str(effort_tier or self.default_effort_tier).strip().lower()
@@ -431,28 +430,28 @@ class Config:
                 )
             ),
         }
-    
+
     def validate(self) -> bool:
         """Whether the required settings are present; logs what is missing."""
         errors = []
-        
+
         if not self.openrouter_api_key:
             errors.append("OPENROUTER_API_KEY is required")
-        
+
         if not self.private_key:
             errors.append("BLOCKCHAIN_PRIVATE_KEY is required for transactions")
-        
+
         if not self.reverse_auction_address:
             errors.append("BLOCKCHAIN_REVERSE_AUCTION_ADDRESS is required")
-        
+
         if errors:
             print("⚠️  Configuration errors:")
             for error in errors:
                 print(f"   - {error}")
             return False
-        
+
         return True
-    
+
     def display(self):
         """Log the configuration, hiding secrets."""
         print("Configuration:")
@@ -473,7 +472,6 @@ class Config:
 
 
 # --- Agent architectures ---
-
 from dataclasses import dataclass
 from typing import List
 
@@ -483,7 +481,7 @@ class ArchitectureConfig:
     """An agent architecture: its reasoning mode, state level and default models."""
     name: str
     description: str
-    state_level: int 
+    state_level: int
     reasoning_mode: str  # "heuristic" or "llm_react"
     coupling_mode: str  # "isolated", "one_way" or "two_way"
     prompt_template: str

@@ -1,4 +1,9 @@
-"""Literature Analysis Agent for the agentic marketplace."""
+"""The provider's service executor: answers a literature-review job with RAG over its papers.
+
+A LangGraph agent answers each prompt, searching a vector index of the job's PDFs
+within the effort tier's budget of tool calls and retrieval rounds. Used by the
+live market mode and by the dataset collection; market runs replay its recordings.
+"""
 
 import os
 import time
@@ -24,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class ResilientOpenAIEmbeddings(OpenAIEmbeddings):
-    """OpenAI embeddings wrapper with retries for transient empty responses."""
+    """OpenAI embeddings with retries for transient empty responses, and cost tracking."""
 
     def __init__(
         self,
@@ -49,7 +54,7 @@ class ResilientOpenAIEmbeddings(OpenAIEmbeddings):
         return "no embedding data received" in message or "embedding" in message
 
     def _estimate_input_tokens(self, texts: List[str], chunk_size: Optional[int]) -> int:
-        """Estimate billable embedding input tokens using the embedding tokenizer."""
+        """Billable input tokens, counted with the embedding tokenizer."""
         if not texts:
             return 0
 
@@ -62,7 +67,7 @@ class ResilientOpenAIEmbeddings(OpenAIEmbeddings):
             return 0
 
     def _record_embedding_cost(self, input_tokens: int) -> None:
-        """Record embedding token costs in the shared cost tracker when available."""
+        """Record the embedding cost in the cost tracker, if there is one."""
         if not self._cost_tracker or input_tokens <= 0 or self._input_price_per_1k <= 0.0:
             return
 
@@ -127,7 +132,7 @@ class ResilientOpenAIEmbeddings(OpenAIEmbeddings):
 
 
 class AgentState(TypedDict, total=False):
-    """State for the LangGraph agent."""
+    """State of the LangGraph agent."""
     messages: Annotated[Sequence[BaseMessage], add_messages]
     tool_calls_used: int
     retrieval_rounds_used: int
@@ -135,16 +140,8 @@ class AgentState(TypedDict, total=False):
 
 
 class ServiceExecutor:
-    """
-    Service Executor that performs RAG-based service execution.
-    
-    This agent:
-    - Loads PDFs provided by clients
-    - Creates vector database for semantic search
-    - Performs literature analyses based on prompts
-    - Provides properly cited responses
-    """
-    
+    """Executes literature-review jobs with RAG: loads the PDFs, indexes them, answers each prompt with citations."""
+
     SYSTEM_PROMPT = """You are a literature analysis assistant specialized in analyzing research papers.
 Your responsibilities:
 1. Answer questions about research papers accurately and comprehensively
@@ -215,7 +212,7 @@ The response is clear, concise, and well-structured.
   5. citation verification
 - If earlier searches are insufficient, reformulate the query rather than concluding early. If you don't have enough information always try to search for more information instead of guessing or concluding!
 """
-    
+
     def __init__(
         self,
         agent_id: str,
@@ -223,15 +220,7 @@ The response is clear, concise, and well-structured.
         cost_tracker: Optional[Any] = None,
         architecture: Optional[str] = None
     ):
-        """
-        Initialize the Literature Analysis Agent.
-        
-        Args:
-            agent_id: Unique identifier for this agent instance
-            workspace_dir: Directory for storing RAG databases (optional)
-            cost_tracker: Optional CostTracker instance for tracking LLM costs
-            architecture: Architecture profile (uses config.architecture when omitted)
-        """
+        """``architecture`` selects the models (default: ``config.architecture``); ``workspace_dir`` holds the vector indexes."""
         self.agent_id = agent_id
         self.workspace_dir = Path(workspace_dir or config.workspace_dir) / agent_id
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -239,12 +228,10 @@ The response is clear, concise, and well-structured.
         self.architecture = architecture or config.architecture
         self.arch_config = get_architecture(self.architecture)
         self.llm_model = getattr(config, "service_llm_override", None) or self.arch_config.service_llm
-        
-        # Initialize LLM and embeddings
+
         if not config.openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY not found in environment variables")
-        
-        # Use config-based parameters (supports quality profiles)
+
         self.llm = ChatOpenAI(
             model=self.llm_model,
             api_key=config.openrouter_api_key,
@@ -264,26 +251,23 @@ The response is clear, concise, and well-structured.
             input_price_per_1k=float(getattr(config, "embedding_input_price_per_1k", 0.0)),
             scope="service_embedding",
         )
-        
-        # RAG parameters from config
+
         self.chunk_size = config.rag_chunk_size
         self.chunk_overlap = config.rag_chunk_overlap
         self.retrieval_k = config.rag_retrieval_k
-        
-        # RAG components (initialized when PDFs are loaded)
+
         self.vectorstore = None
         self.retriever = None
         self.current_pdf_directory = None
-        
-        # LangGraph workflow
+
         self.graph = None
         self.tools = []
-        
+
         logger.info(f"Initialized ServiceExecutor: {agent_id} "
                f"(model={self.llm_model}, temp={config.rag_temperature}, k={config.rag_retrieval_k})")
-    
+
     def _extract_paper_metadata(self, document: Any) -> Dict[str, str]:
-        """Extract the filename-based source identity for a document."""
+        """The source id of a document, from its file name."""
         metadata = document.metadata
         source_path = str(metadata.get("source", ""))
         source_file = os.path.basename(source_path)
@@ -293,59 +277,44 @@ The response is clear, concise, and well-structured.
         }
 
     def load_pdfs(self, pdf_directory: str, force_rebuild: bool = False) -> bool:
-        """
-        Load PDFs and create/update vector database.
-        
-        Args:
-            pdf_directory: Path to directory containing PDF files
-            force_rebuild: Force rebuild of vector database even if it exists
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        """Load the PDFs of a job and build (or reuse) their vector index; False on failure."""
         try:
             pdf_dir = Path(pdf_directory)
             if not pdf_dir.exists():
                 logger.error(f"PDF directory does not exist: {pdf_directory}")
                 return False
-            
+
             pdf_files = list(pdf_dir.glob("*.pdf"))
             if not pdf_files:
                 logger.error(f"No PDF files found in {pdf_directory}")
                 return False
-            
+
             logger.info(f"Found {len(pdf_files)} PDF files")
-            
-            # Set up persist directory for this PDF collection
+
             collection_name = f"literature_analysis_{self.agent_id}"
             persist_directory = self.workspace_dir / "RAGfiles" / pdf_dir.name
             persist_directory.mkdir(parents=True, exist_ok=True)
-            
-            # Check if we need to rebuild
+
             needs_rebuild = force_rebuild or not (persist_directory / "chroma.sqlite3").exists()
-            
+
             if needs_rebuild:
                 logger.info("Building vector database from PDFs...")
-                
-                # Load PDFs
+
                 loader = PyPDFDirectoryLoader(str(pdf_dir))
                 documents = loader.load()
                 logger.info(f"Loaded {len(documents)} pages from PDFs")
-                
-                # Extract and add metadata
+
                 for doc in documents:
                     paper_metadata = self._extract_paper_metadata(doc)
                     doc.metadata.update(paper_metadata)
-                
-                # Split documents using config-based parameters
+
                 text_splitter = RecursiveCharacterTextSplitter(
                     chunk_size=self.chunk_size,
                     chunk_overlap=self.chunk_overlap
                 )
                 splits = text_splitter.split_documents(documents)
                 logger.info(f"Created {len(splits)} text chunks")
-                
-                # Create vector database
+
                 self.vectorstore = Chroma.from_documents(
                     documents=splits,
                     embedding=self.embeddings,
@@ -361,29 +330,27 @@ The response is clear, concise, and well-structured.
                     persist_directory=str(persist_directory)
                 )
                 logger.info("Loaded existing vector database")
-            
-            # Create retriever using config-based parameters
+
             self.retriever = self.vectorstore.as_retriever(
                 search_type="similarity",
                 search_kwargs={"k": self.retrieval_k}
             )
-            
+
             self.current_pdf_directory = pdf_directory
-            
-            # Rebuild LangGraph with the search tool
+
+            # The graph closes over the search tool, so it is rebuilt.
             self._build_graph()
-            
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Error loading PDFs: {e}", exc_info=True)
             return False
-    
+
     def _apply_effort_model(self, effort_budget: Dict[str, Any]) -> None:
         """Swap the execution model for this run when the tier names one.
 
-        Kept off the constructor deliberately: the tier is known per request, not per
-        provider, and a provider that sells three tiers runs all three.
+        Not set in the constructor: a provider runs whatever tier each job asks for.
         """
         self.active_input_price_per_1k = effort_budget.get("input_price_per_1k")
         self.active_output_price_per_1k = effort_budget.get("output_price_per_1k")
@@ -418,9 +385,9 @@ The response is clear, concise, and well-structured.
         )
 
     def _create_search_tool(self):
-        """Create the search_literature tool with access to the retriever."""
+        """The search_literature tool, bound to the current retriever."""
         retriever = self.retriever
-        
+
         @tool
         def search_literature(query: str) -> str:
             """
@@ -430,34 +397,28 @@ The response is clear, concise, and well-structured.
             compare findings, or gather information for literature analyses.
             """
             docs = retriever.invoke(query)
-            
+
             if not docs:
                 return "No relevant information found in the research papers."
-            
-            # Format results with citations
+
             results = []
             for i, doc in enumerate(docs, 1):
                 source_id = doc.metadata.get('source_id')
                 if not source_id:
                     source_id = Path(str(doc.metadata.get('source', ''))).stem or 'unknown_source'
-                
+
                 citation = f"[{source_id}]"
                 content = doc.page_content.strip()
-                
+
                 results.append(f"Source {i} {citation}:\n{content}\n")
-            
+
             return "\n---\n".join(results)
-        
+
         return search_literature
 
     @staticmethod
     def _extract_response_text(content: Any) -> str:
-        """Extract text payloads from heterogeneous message content shapes.
-
-        Some model/providers return a plain string while others return a list of
-        structured blocks. This method collects all text-like fields and joins
-        them. If no text is present, it returns an empty string.
-        """
+        """The text of a model response, whether it is a string or a list of content blocks."""
         if content is None:
             return ""
 
@@ -506,23 +467,18 @@ The response is clear, concise, and well-structured.
         max_tool_calls: Optional[int] = None,
         max_retrieval_rounds: Optional[int] = None,
     ):
-        """
-        Build the LangGraph workflow.
-        """
+        """Build the LangGraph agent: the LLM node, the tool node and the loop between them."""
         if not self.retriever:
             logger.warning("Cannot build graph without retriever. Load PDFs first.")
             return
-        
+
         active_llm = self.llm
-        
-        # Create tools
+
         search_tool = self._create_search_tool()
         self.tools = [search_tool]
-        
-        # Bind tools to active LLM
+
         llm_with_tools = active_llm.bind_tools(self.tools)
-        
-        # Create callback if cost tracking enabled
+
         callbacks = None
         if self.cost_tracker:
             try:
@@ -532,7 +488,7 @@ The response is clear, concise, and well-structured.
 
             callback = LLMCostCallback(
                 cost_tracker=self.cost_tracker,
-                model=active_llm.model_name,  # Use active LLM's model
+                model=active_llm.model_name,
                 input_price_per_1k=float(
                     self.active_input_price_per_1k
                     if self.active_input_price_per_1k is not None
@@ -546,25 +502,21 @@ The response is clear, concise, and well-structured.
                 scope="service_execution",
             )
             callbacks = [callback]
-        
-        # Define graph nodes
+
         def call_llm(state: AgentState) -> AgentState:
-            """Call the LLM with tools and system prompt."""
             messages = state['messages']
-            
-            # Add system prompt if not already present
+
             if not messages or not isinstance(messages[0], SystemMessage):
                 messages = [SystemMessage(content=self.SYSTEM_PROMPT)] + messages
-            
-            # Invoke with callbacks if provided
+
             if callbacks:
                 response = llm_with_tools.invoke(messages, config={"callbacks": callbacks})
             else:
                 response = llm_with_tools.invoke(messages)
             return {'messages': [response]}
-        
+
         def should_continue(state: AgentState) -> Literal["tools", "end"]:
-            """Determine if we should use tools or end."""
+            """Whether the LLM asked for a tool call."""
             last_message = state['messages'][-1]
 
             if not (hasattr(last_message, 'tool_calls') and last_message.tool_calls):
@@ -574,14 +526,14 @@ The response is clear, concise, and well-structured.
                 return "end"
 
             return "tools"
-        
+
         def call_tools(state: AgentState) -> AgentState:
-            """Execute tool calls and return results."""
+            """Run the requested tool calls within the tier's budget."""
             last_message = state['messages'][-1]
             tool_calls = last_message.tool_calls
-            
+
             tools_dict = {tool.name: tool for tool in self.tools}
-            
+
             results = []
             tool_calls_used = int(state.get("tool_calls_used", 0) or 0)
             retrieval_rounds_used = int(state.get("retrieval_rounds_used", 0) or 0)
@@ -612,7 +564,7 @@ The response is clear, concise, and well-structured.
                     and retrieval_round_count >= remaining_retrieval_rounds
                 ):
                     allow_tool_call = False
-                
+
                 if not allow_tool_call:
                     budget_exhausted = True
                     result = (
@@ -624,7 +576,7 @@ The response is clear, concise, and well-structured.
                 else:
                     tool = tools_dict[tool_name]
                     result = tool.invoke(tool_args)
-                
+
                 tool_message = ToolMessage(
                     content=str(result),
                     tool_call_id=tool_call['id'],
@@ -651,8 +603,7 @@ The response is clear, concise, and well-structured.
                 'retrieval_rounds_used': int(state.get("retrieval_rounds_used", 0) or 0) + retrieval_round_count,
                 'budget_exhausted': budget_exhausted,
             }
-        
-        # Build graph
+
         workflow = StateGraph(AgentState)
         workflow.add_node("agent", call_llm)
         workflow.add_node("tools", call_tools)
@@ -666,13 +617,12 @@ The response is clear, concise, and well-structured.
         )
         workflow.add_edge("tools", "agent")
         workflow.set_entry_point("agent")
-        
+
         self.graph = workflow.compile()
         logger.info("LangGraph workflow built successfully")
 
     @staticmethod
     def _normalize_effort_tier(effort_tier: Optional[str]) -> Optional[str]:
-        """Normalize effort names to strict low/medium/high tiers."""
         if effort_tier is None:
             return None
 
@@ -688,34 +638,17 @@ The response is clear, concise, and well-structured.
         force_rebuild: bool = False,
         effort_tier: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Perform a literature analysis based on provided PDFs and prompts.
-        
-        Args:
-            pdf_directory: Path to directory containing PDF files
-            prompts: List of questions/prompts for the literature analysis
-            force_rebuild: Force rebuild of vector database
-            effort_tier: Optional effort tier for execution budget selection ("low", "medium", "high")
-            
-        Returns:
-            Dictionary containing analysis results:
-            {
-                "success": bool,
-                "agent_id": str,
-                "pdf_directory": str,
-                "prompts": List[str],
-                "responses": List[Dict[str, Any]],
-                # [{"prompt", "response", "retrieval_rounds_used", "tool_calls_used",
-                #   "budget_exhausted", "usage_measured", "prompt_duration_seconds"}]
-                "retrieval_rounds_total": Optional[int],
-                "error": Optional[str]
-            }
+        """Answer every prompt of a job from the PDFs in ``pdf_directory``, within the effort tier's budget.
 
-        ``retrieval_rounds_used`` is how many times the agent went back to the
-        documents for *this one prompt* (each prompt gets a fresh state with the
-        counter at 0). It is ``None`` when the value could not be observed rather than 0, because a
-        silent 0 is indistinguishable from "no digging" and would poison any
-        regression fitted on it; ``usage_measured`` says which case applies.
+        Returns ``success``, ``responses`` (per prompt: ``prompt``, ``response``,
+        ``retrieval_rounds_used``, ``tool_calls_used``, ``budget_exhausted``,
+        ``usage_measured``, ``prompt_duration_seconds``), ``retrieval_rounds_total`` and
+        ``error``.
+
+        ``retrieval_rounds_used`` counts how often the agent went back to the documents for
+        that one prompt. It is None when it could not be observed rather than 0, because a
+        silent 0 would look like a prompt that needed no retrieval; ``usage_measured`` says
+        which case applies.
         """
         result = {
             "success": False,
@@ -727,7 +660,7 @@ The response is clear, concise, and well-structured.
             "error": None,
             "partial_fallback_used": False
         }
-        
+
         try:
             normalized_effort_tier = self._normalize_effort_tier(effort_tier)
             if effort_tier and normalized_effort_tier is None:
@@ -745,32 +678,30 @@ The response is clear, concise, and well-structured.
                 self.llm_model,
             )
 
-            # Load PDFs if not already loaded or if directory changed
+            # Load the PDFs unless this directory is already loaded.
             if self.current_pdf_directory != pdf_directory or force_rebuild:
                 if not self.load_pdfs(pdf_directory, force_rebuild):
                     result["error"] = "Failed to load PDFs"
                     return result
-            
+
             # Model and retriever first: the graph closes over both when it is built.
             self._apply_effort_model(effort_budget)
             self._apply_retrieval_k(effort_budget.get("retrieval_k", self.retrieval_k))
 
-            # IMPORTANT: Rebuild graph for each service to prevent context accumulation.
+            # Rebuild the graph for every job, so context does not accumulate across jobs.
             self._build_graph(
                 max_tool_calls=effort_budget["max_tool_calls"],
                 max_retrieval_rounds=effort_budget["max_retrieval_rounds"],
             )
-            
+
             if not self.graph:
                 result["error"] = "Graph not initialized. Load PDFs first."
                 return result
-            
-            # Process each prompt
+
             recursion_limit = int(getattr(config, "service_recursion_limit", 25))
             for prompt in prompts:
                 logger.info(f"Processing prompt: {prompt[:100]}...")
 
-                # Create initial state with the prompt
                 initial_state = {
                     "messages": [HumanMessage(content=prompt)],
                     "tool_calls_used": 0,
@@ -778,7 +709,7 @@ The response is clear, concise, and well-structured.
                     "budget_exhausted": False,
                 }
 
-                # Run the graph (bounded to avoid infinite tool loops)
+                # Bounded, so a tool loop cannot run forever.
                 prompt_started = time.perf_counter()
                 try:
                     graph_result = self.graph.invoke(
@@ -793,9 +724,7 @@ The response is clear, concise, and well-structured.
                             "falling back to retrieval-only answer"
                         )
                         response_text = self._retrieval_only_fallback(prompt)
-                        # The graph raised, so its state never came back: usage is
-                        # unknown, not zero. Recording 0 here would look like a
-                        # trivially easy prompt when it was in fact the hardest.
+                        # The graph raised, so its usage is unknown, not zero.
                         result["responses"].append({
                             "prompt": prompt,
                             "response": response_text,
@@ -810,7 +739,6 @@ The response is clear, concise, and well-structured.
                     else:
                         raise
 
-                # Extract the final response
                 final_message = graph_result['messages'][-1]
 
                 logger.info(
@@ -819,7 +747,6 @@ The response is clear, concise, and well-structured.
                     graph_result.get("retrieval_rounds_used", 0),
                 )
 
-                # Extract text robustly across provider/model content shapes.
                 response_text = self._extract_response_text(final_message.content)
 
                 if not response_text.strip():
@@ -827,7 +754,7 @@ The response is clear, concise, and well-structured.
                         "Empty response text extracted for prompt: %s",
                         prompt[:100],
                     )
-                
+
                 result["responses"].append({
                     "prompt": prompt,
                     "response": response_text,
@@ -837,25 +764,24 @@ The response is clear, concise, and well-structured.
                     "usage_measured": True,
                     "prompt_duration_seconds": round(time.perf_counter() - prompt_started, 3),
                 })
-            
+
             measured = [
                 r["retrieval_rounds_used"] for r in result["responses"]
                 if r.get("usage_measured") and r.get("retrieval_rounds_used") is not None
             ]
-            # Total over measured prompts only. Left None when nothing was
-            # measured so a consumer cannot mistake "unobserved" for "zero".
+            # Total over measured prompts only; None when nothing was measured.
             result["retrieval_rounds_total"] = sum(measured) if measured else None
             result["success"] = True
             logger.info(f"Literature analysis completed successfully with {len(prompts)} prompts")
-            
+
         except Exception as e:
             logger.error(f"Error performing analysis: {e}", exc_info=True)
             result["error"] = str(e)
-        
+
         return result
 
     def _retrieval_only_fallback(self, prompt: str) -> str:
-        """Build a deterministic answer from retriever output when agent reasoning loops."""
+        """A fixed answer built from the retriever's output, used when the agent loops."""
         try:
             if not self.retriever:
                 return (

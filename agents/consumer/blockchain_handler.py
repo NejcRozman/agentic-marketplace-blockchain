@@ -16,60 +16,60 @@ logger = logging.getLogger(__name__)
 
 class ConsumerBlockchainHandler:
     """The consumer's chain operations, over the ReverseAuction contract and the ERC-8004 registries."""
-    
+
     def __init__(self, consumer_config=None):
         self.config = consumer_config or config
         self.client = BlockchainClient(self.config)
         self.consumer_agent_id = self.config.consumer_agent_id
         self._initialized = False
-        
+
         logger.info(f"ConsumerBlockchainHandler created for consumer agent {self.consumer_agent_id}")
-    
+
     async def initialize(self) -> bool:
         """Connect to the chain and load the contracts; False on failure."""
         if self._initialized:
             return True
-        
+
         try:
             await self.client._initialize()
-            
+
             reverse_auction_abi = self._load_reverse_auction_abi()
             await self.client.load_contract(
                 "ReverseAuction",
                 self.config.reverse_auction_address,
                 reverse_auction_abi
             )
-            
+
             identity_registry_abi = self._load_identity_registry_abi()
             await self.client.load_contract(
                 "IdentityRegistry",
                 self.config.identity_registry_address,
                 identity_registry_abi
             )
-            
+
             reputation_registry_abi = self._load_reputation_registry_abi()
             await self.client.load_contract(
                 "ReputationRegistry",
                 self.config.reputation_registry_address,
                 reputation_registry_abi
             )
-            
+
             self._initialized = True
             logger.info("✅ Consumer blockchain handler initialized")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize consumer blockchain handler: {e}")
             return False
-    
+
     async def approve_tokens(self, amount: int) -> bool:
         """Allow the ReverseAuction contract to take ``amount`` USDC (micro-USDC) into escrow."""
         try:
             if not self._initialized:
                 await self.initialize()
-            
+
             logger.info(f"Approving {amount} USDC for ReverseAuction contract...")
-            
+
             erc20_abi = [
                 {
                     "inputs": [
@@ -82,32 +82,32 @@ class ConsumerBlockchainHandler:
                     "type": "function"
                 }
             ]
-            
+
             await self.client.load_contract(
                 "USDC",
                 self.config.payment_token_address,
                 erc20_abi
             )
-            
+
             tx_hash = await self.client.send_transaction(
                 "USDC",
                 "approve",
                 self.config.reverse_auction_address,
                 amount
             )
-            
+
             receipt = await self.client.wait_for_transaction(tx_hash)
-            
+
             if receipt['status'] != 1:
                 raise Exception("Approval transaction failed")
-            
+
             logger.info(f"✅ Approved {amount} USDC, tx={tx_hash}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to approve tokens: {e}")
             return False
-    
+
     async def create_auction(
         self,
         service_cid: str,
@@ -160,22 +160,22 @@ class ConsumerBlockchainHandler:
                 reputation_weight,
                 gas_limit=estimated_gas + 50000
             )
-            
+
             receipt = await self.client.wait_for_transaction(tx_hash)
-            
+
             if receipt['status'] != 1:
                 raise Exception("Transaction failed")
-            
+
             auction_id = await self._extract_auction_id_from_receipt(receipt)
-            
+
             logger.info(f"✅ Auction created: ID={auction_id}, tx={tx_hash}")
-            
+
             return {
                 "auction_id": auction_id,
                 "tx_hash": tx_hash,
                 "error": None
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to create auction: {e}")
             return {
@@ -183,45 +183,45 @@ class ConsumerBlockchainHandler:
                 "tx_hash": None,
                 "error": str(e)
             }
-    
+
     async def end_auction(self, auction_id: int) -> Dict[str, Any]:
         """End an auction; returns the transaction hash, the winner and the winning bid."""
         try:
             if not self._initialized:
                 await self.initialize()
-            
+
             logger.info(f"Ending auction {auction_id}...")
-            
+
             estimated_gas = await self.client.estimate_gas(
                 "ReverseAuction",
                 "endAuction",
                 auction_id
             )
-            
+
             tx_hash = await self.client.send_transaction(
                 "ReverseAuction",
                 "endAuction",
                 auction_id,
                 gas_limit=estimated_gas + 50000
             )
-            
+
             receipt = await self.client.wait_for_transaction(tx_hash)
-            
+
             if receipt['status'] != 1:
                 raise Exception("Transaction failed")
-            
+
             event_data = await self._extract_auction_ended_event(receipt, auction_id)
-            
+
             logger.info(f"✅ Auction ended: ID={auction_id}, winner={event_data['winning_agent_id']}, "
                        f"bid={event_data['winning_bid']}")
-            
+
             return {
                 "tx_hash": tx_hash,
                 "winning_agent_id": event_data['winning_agent_id'],
                 "winning_bid": event_data['winning_bid'],
                 "error": None
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to end auction {auction_id}: {e}")
             return {
@@ -230,19 +230,19 @@ class ConsumerBlockchainHandler:
                 "winning_bid": None,
                 "error": str(e)
             }
-    
+
     async def get_auction_status(self, auction_id: int) -> Dict[str, Any]:
         """The fields of an auction's on-chain struct, as a dict."""
         try:
             if not self._initialized:
                 await self.initialize()
-            
+
             auction_data = await self.client.call_contract_method(
                 "ReverseAuction",
                 "getAuctionDetails",
                 auction_id
             )
-            
+
             # Auction struct: id, buyer, serviceDescriptionCid, maxPrice, commitDuration, startTime,
             # eligibleAgentIds, winningAgentId, winningBid, isActive, isCompleted, escrowAmount,
             # reputationWeight, revealDuration.
@@ -295,8 +295,8 @@ class ConsumerBlockchainHandler:
             return None
 
     async def get_feedback_auth(
-        self, 
-        auction_id: int, 
+        self,
+        auction_id: int,
         from_block: Optional[int] = None,
         lookback_blocks: int = 1000
     ) -> Optional[bytes]:
@@ -307,13 +307,13 @@ class ConsumerBlockchainHandler:
         try:
             if not self._initialized:
                 await self.initialize()
-            
+
             if from_block is None:
                 current_block = await self.client.get_block_number()
                 from_block = max(0, current_block - lookback_blocks)
-            
+
             logger.info(f"Querying FeedbackAuthProvided event for auction {auction_id} from block {from_block}...")
-            
+
             events = await self.client.get_contract_events(
                 "ReverseAuction",
                 "FeedbackAuthProvided",
@@ -321,7 +321,7 @@ class ConsumerBlockchainHandler:
                 to_block="latest",
                 filters={"auctionId": auction_id}
             )
-            
+
             if events:
                 feedback_auth = events[0]['args']['feedbackAuth']
                 logger.info(f"✅ Found feedbackAuth for auction {auction_id}")
@@ -329,11 +329,11 @@ class ConsumerBlockchainHandler:
             else:
                 logger.warning(f"No FeedbackAuthProvided event found for auction {auction_id}")
                 return None
-            
+
         except Exception as e:
             logger.error(f"Failed to get feedbackAuth for auction {auction_id}: {e}")
             return None
-    
+
     async def submit_feedback(
         self,
         auction_id: int,
@@ -392,26 +392,26 @@ class ConsumerBlockchainHandler:
                 feedback_hash,
                 gas_limit=estimated_gas + 50000
             )
-            
+
             receipt = await self.client.wait_for_transaction(tx_hash)
-            
+
             if receipt['status'] != 1:
                 raise Exception("Transaction failed")
-            
+
             logger.info(f"✅ Feedback submitted: tx={tx_hash}")
-            
+
             return {
                 "tx_hash": tx_hash,
                 "error": None
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to submit feedback: {e}")
             return {
                 "tx_hash": None,
                 "error": str(e)
             }
-    
+
     async def _extract_auction_id_from_receipt(self, receipt: Dict[str, Any]) -> int:
         events = await self.client.get_contract_events(
             "ReverseAuction",
@@ -419,16 +419,16 @@ class ConsumerBlockchainHandler:
             from_block=receipt['blockNumber'],
             to_block=receipt['blockNumber']
         )
-        
+
         # Both transaction hashes are hex strings.
         receipt_tx_hash = receipt['transactionHash'] if isinstance(receipt['transactionHash'], str) else receipt['transactionHash'].hex()
         for event in events:
             event_tx_hash = event['transactionHash'] if isinstance(event['transactionHash'], str) else event['transactionHash'].hex()
             if event_tx_hash == receipt_tx_hash:
                 return event['args']['auctionId']
-        
+
         raise Exception("AuctionCreated event not found in receipt")
-    
+
     async def _extract_auction_ended_event(self, receipt: Dict[str, Any], auction_id: int) -> Dict[str, Any]:
         events = await self.client.get_contract_events(
             "ReverseAuction",
@@ -437,42 +437,42 @@ class ConsumerBlockchainHandler:
             to_block=receipt['blockNumber'],
             filters={"auctionId": auction_id}
         )
-        
+
         if not events:
             raise Exception("AuctionEnded event not found in receipt")
-        
+
         event = events[0]
         return {
             "winning_agent_id": event['args']['winningAgentId'],
             "winning_bid": event['args']['winningBid']
         }
-    
+
     def _load_reverse_auction_abi(self) -> List[Dict]:
         import json
         from pathlib import Path
-        
+
         abi_path = Path(__file__).parent.parent.parent / "contracts" / "out" / "ReverseAuction.sol" / "ReverseAuction.json"
-        
+
         with open(abi_path, 'r') as f:
             contract_json = json.load(f)
             return contract_json['abi']
-    
+
     def _load_identity_registry_abi(self) -> List[Dict]:
         import json
         from pathlib import Path
-        
+
         abi_path = Path(__file__).parent.parent.parent / "contracts" / "out" / "IIdentityRegistry.sol" / "IIdentityRegistry.json"
-        
+
         with open(abi_path, 'r') as f:
             contract_json = json.load(f)
             return contract_json['abi']
-    
+
     def _load_reputation_registry_abi(self) -> List[Dict]:
         import json
         from pathlib import Path
-        
+
         abi_path = Path(__file__).parent.parent.parent / "contracts" / "out" / "IReputationRegistry.sol" / "IReputationRegistry.json"
-        
+
         with open(abi_path, 'r') as f:
             contract_json = json.load(f)
             return contract_json['abi']

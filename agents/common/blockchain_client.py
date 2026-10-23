@@ -24,27 +24,27 @@ logger = logging.getLogger(__name__)
 
 class BlockchainClient:
     """Asynchronous web3 client with retries on transient RPC failures."""
-    
+
     def __init__(self, blockchain_config = None):
         self.config = blockchain_config or config
         self.w3: Optional[AsyncWeb3] = None
         self.account: Optional[Account] = None
         self.contracts: Dict[str, Any] = {}
         self._initialized = False
-    
+
     async def __aenter__(self):
         await self._initialize()
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
         return False
-    
+
     async def _initialize(self):
         """Connect to the RPC endpoint and set up the account, if a key is given."""
         if self._initialized:
             return
-        
+
         try:
             self.w3 = AsyncWeb3(
                 AsyncWeb3.AsyncHTTPProvider(
@@ -52,22 +52,22 @@ class BlockchainClient:
                     request_kwargs={"timeout": ClientTimeout(total=HTTP_REQUEST_TIMEOUT_SECONDS)},
                 )
             )
-                       
+
             if self.config.private_key:
                 self.account = Account.from_key(self.config.private_key)
                 logger.info(f"Initialized account: {self.account.address}")
-            
+
             if await self.is_connected():
                 chain_id = await self.w3.eth.chain_id
                 logger.info(f"Connected to blockchain - Chain ID: {chain_id}")
                 self._initialized = True
             else:
                 logger.error("Failed to connect to blockchain")
-                
+
         except Exception as e:
             logger.error(f"Error initializing blockchain client: {e}")
             raise
-    
+
     async def is_connected(self) -> bool:
         try:
             if not self.w3:
@@ -76,43 +76,43 @@ class BlockchainClient:
             return True
         except Exception:
             return False
-    
+
     async def get_balance(self, address: Optional[str] = None) -> int:
         """Native-token balance of an address, in wei."""
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
-        
+
         addr = address or (self.account.address if self.account else None)
         if not addr:
             raise ValueError("No address provided and no account configured")
-        
+
         balance = await self.w3.eth.get_balance(to_checksum_address(addr))
         return balance
-    
+
     async def get_gas_price(self) -> int:
         """The configured gas price, or the node's."""
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
-        
+
         gas_price = getattr(self.config, 'gas_price', None)
         if gas_price:
             return gas_price
-        
+
         return await self.w3.eth.gas_price
-    
+
     async def load_contract(self, name: str, address: str, abi: List[Dict]) -> Any:
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
-        
+
         contract = self.w3.eth.contract(
             address=to_checksum_address(address),
             abi=abi
         )
-        
+
         self.contracts[name] = contract
         logger.info(f"Loaded contract {name} at {address}")
         return contract
-    
+
     async def call_contract_method(
         self,
         contract_name: str,
@@ -147,7 +147,7 @@ class BlockchainClient:
                 logger.error(f"Error calling {contract_name}.{method_name}: {e}")
 
         raise last_error
-    
+
     async def send_transaction(
         self,
         contract_name: str,
@@ -161,13 +161,13 @@ class BlockchainClient:
         """Build, sign and send a transaction to a contract method, retrying nonce races."""
         if not self.account:
             raise RuntimeError("No account configured for sending transactions")
-        
+
         if contract_name not in self.contracts:
             raise ValueError(f"Contract {contract_name} not loaded")
-        
+
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
-        
+
         contract = self.contracts[contract_name]
         method = getattr(contract.functions, method_name)
 
@@ -200,7 +200,7 @@ class BlockchainClient:
                 raise
 
         raise last_error
-    
+
     async def wait_for_transaction(self, tx_hash: str, timeout: int = 120) -> Dict[str, Any]:
         """Wait for a transaction's receipt, retrying transient RPC errors.
 
@@ -235,7 +235,7 @@ class BlockchainClient:
                 logger.error(f"Error waiting for transaction {tx_hash}: {e}")
 
         raise last_error
-    
+
     async def get_contract_events(
         self,
         contract_name: str,
@@ -247,21 +247,21 @@ class BlockchainClient:
         """Contract events in a block range, via eth_getLogs."""
         if contract_name not in self.contracts:
             raise ValueError(f"Contract {contract_name} not loaded")
-        
+
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
-        
+
         contract = self.contracts[contract_name]
         event = getattr(contract.events, event_name)
-        
+
         logs = await event.get_logs(
             from_block=from_block,
             to_block=to_block,
             argument_filters=filters or {}
         )
-        
+
         return [dict(log) for log in logs]
-    
+
     async def estimate_gas(
         self,
         contract_name: str,
@@ -303,27 +303,27 @@ class BlockchainClient:
                 logger.error(f"Error estimating gas for {contract_name}.{method_name}: {e}")
 
         raise last_error
-    
+
     async def get_block(self, block_identifier: Union[int, str] = 'latest') -> Dict[str, Any]:
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
-        
+
         block = await self.w3.eth.get_block(block_identifier)
         return dict(block)
-    
+
     async def get_block_number(self) -> int:
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
-        
+
         return await self.w3.eth.block_number
-    
+
     async def get_transaction(self, tx_hash: str) -> Dict[str, Any]:
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
-        
+
         tx = await self.w3.eth.get_transaction(tx_hash)
         return dict(tx)
-    
+
     async def close(self):
         if self.w3 and self.w3.provider:
             try:

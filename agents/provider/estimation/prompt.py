@@ -250,11 +250,10 @@ def parse_response(content: str):
 
 
 def clean_rounds(rounds: Sequence[float], n_prompts: int) -> Optional[Tuple[float, ...]]:
-    """Depths, bounds-checked and length-checked. ``None`` if unusable.
+    """The depths, checked for length and range; None if unusable.
 
-    A wrong-length array is rejected rather than padded: the alignment between
-    depths and prompts is the protocol, and a caller that guesses at it would
-    silently score a different quantity.
+    A wrong-length answer is rejected rather than padded: the alignment of depths with
+    prompts is the protocol.
     """
     if len(rounds) != n_prompts:
         return None
@@ -270,17 +269,13 @@ def clean_rounds(rounds: Sequence[float], n_prompts: int) -> Optional[Tuple[floa
 def calibrate(
     observations: Sequence[Tuple[int, float, float]], *, two_param: bool = True
 ) -> Optional[Tuple[float, float]]:
-    """Fit ``(a, b)`` in ``cost = a*n_prompts + b*sum(rounds)`` on own history.
+    """Fit ``(a, b)`` in ``cost = a * n_prompts + b * sum(rounds)`` on the agent's own jobs.
 
-    ``observations`` are ``(n_prompts, sum_rounds, realised_cost)`` from the
-    agent's completed jobs — one per finished job, all of them strictly causal.
-
-    Two parameters need two observations and an actual spread in the regressors;
-    with less, or when the fit degenerates, this falls back to the one-parameter
-    form ``cost = b*sum(rounds)`` and finally returns ``None``, which the caller
-    degrades to the heuristic. A negative fitted coefficient is rejected for the
-    same reason: cost cannot fall as work rises, so a negative fit is noise, not
-    a finding.
+    ``observations`` are ``(n_prompts, sum_rounds, realised_cost)``, one per completed
+    job. Two parameters need at least two observations with spread in the regressors;
+    otherwise, or if the fit degenerates, the one-parameter form ``cost = b * sum(rounds)``
+    is used, and None if that fails too. Negative coefficients are rejected: cost cannot
+    fall as work rises.
     """
     usable = [(float(n), float(s), float(c))
               for n, s, c in observations if n > 0 and s > 0 and c > 0]

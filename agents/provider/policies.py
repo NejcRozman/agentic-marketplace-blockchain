@@ -31,10 +31,7 @@ _DEFAULT_RNG = _random.Random()
 EFFORT_TIERS: Tuple[str, str, str] = ("low", "medium", "high")
 
 
-# ---------------------------------------------------------------------------
-# Inputs
-# ---------------------------------------------------------------------------
-
+# --- Inputs ---
 @dataclass(frozen=True)
 class AuctionView:
     """What the agent can observe about one auction and its own standing."""
@@ -54,12 +51,12 @@ class AgentEconomics:
     estimator if it has one.
     """
 
-    execution_cost_micro: int                                    # EMA or prior
+    execution_cost_micro: int  # running average or prior
     execution_cost_by_tier_micro: Mapping[str, int] = field(default_factory=dict)
     quality_by_tier: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     overhead_per_participation_micro: int = 0
     unrecovered_overhead_micro: int = 0
-    wins: int = 0                                                # deliveries observed so far
+    wins: int = 0  # jobs delivered so far
 
     #: Per-tier, job-specific deviation from the history level, or None for "no
     #: estimate — bid the history" (Adaptive). The estimator supplies the shape;
@@ -136,7 +133,7 @@ class PolicyDecision:
 
     bid_micro: Optional[int]                        # None = abstain
     effort_tier: Optional[str] = None               # None = caller's default tier
-    reason: str = ""                                # audit parity with the old log lines
+    reason: str = ""  # logged with the bid
     profit_cost_basis_micro: int = 0                # true cost of what would be delivered
     bid_interval: Optional[Tuple[int, int]] = None  # support of the draw, for stochastic policies
 
@@ -152,10 +149,7 @@ def _abstain(reason: str, profit_cost_basis_micro: int = 0) -> PolicyDecision:
     )
 
 
-# ---------------------------------------------------------------------------
-# Shared controller pieces
-# ---------------------------------------------------------------------------
-
+# --- Shared controller pieces ---
 def expected_clearing_price_micro(
     econ: AgentEconomics, params: PolicyParams
 ) -> Optional[int]:
@@ -210,12 +204,10 @@ def abstention_reason(
 
 
 def initial_derivative_follower_margin(params: PolicyParams, rng=_DEFAULT_RNG) -> float:
-    """Starting margin for the derivative-follower controllers.
+    """Adaptive's starting margin.
 
-    "max" (default): start greedy at max_margin and concede down — classic
-    ZIP/Cliff, which spends the first several auctions probing down from the
-    ceiling.  "mid": competitive from the first bid.  "random": a uniform draw,
-    which desynchronises agents in the same group.
+    "max" (default) starts at max_margin and concedes down; "mid" starts at the
+    midpoint; "random" draws it uniformly, which desynchronises agents of one group.
     """
     lo, hi = params.min_margin, params.max_margin
     if params.initial_margin_mode == "mid":
@@ -227,7 +219,7 @@ def initial_derivative_follower_margin(params: PolicyParams, rng=_DEFAULT_RNG) -
 
 def _derivative_follower_update(state: PolicyState, wins: int, params: PolicyParams,
                                 rng) -> None:
-    """Margin creeps up after a win, concedes after a loss.
+    """Raise the margin after a win, lower it after a loss.
 
     Steady-state P(win) ≈ step_down / (step_up + step_down).
     """
@@ -243,25 +235,16 @@ def _derivative_follower_update(state: PolicyState, wins: int, params: PolicyPar
     state.prev_wins = wins
 
 
-# ---------------------------------------------------------------------------
-# Policies
-# ---------------------------------------------------------------------------
-
+# --- Policies ---
 def decide_zi_random(view: AuctionView, econ: AgentEconomics, state: PolicyState,
                      params: PolicyParams, rng=_DEFAULT_RNG) -> PolicyDecision:
     """Random: Uniform[cost, max_price].
 
     Carries no controller state and reads no win/loss, competitor or reputation
-    signal.
-
-    The floor is the *execution*-cost estimate only.  Participation overhead is
-    excluded deliberately: it is outcome-coupled (gas spent per auction
-    participated in), and routing it into the bid would reintroduce the very
-    feedback channel this strategy exists to switch off.  It is still charged
+    signal. The floor is the execution-cost estimate only: participation overhead
+    (gas per auction entered) depends on outcomes, and putting it in the bid would
+    reintroduce the feedback this strategy is meant to lack. It is still charged
     against profit.
-
-    ``econ.execution_cost_micro`` is the running average over completed jobs, a
-    weak residual feedback channel.
     """
     if view.max_price <= 0:
         return _abstain(f"invalid max_price={view.max_price}")

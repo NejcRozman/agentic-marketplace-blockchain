@@ -66,7 +66,6 @@ class _UsageAccumulator:
 
 
 class ServiceEvaluator:
-
     def __init__(self, config: Config):
         self.config = config
         self._api_url = config.openrouter_base_url.rstrip("/") + "/chat/completions"
@@ -87,7 +86,6 @@ class ServiceEvaluator:
         return self._model
 
     # --- Public API ---
-
     async def evaluate(
         self,
         service_requirements: Dict[str, Any],
@@ -184,7 +182,6 @@ class ServiceEvaluator:
         }
 
     # --- Internals ---
-
     async def _score_pair(
         self,
         session: aiohttp.ClientSession,

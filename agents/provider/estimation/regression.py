@@ -10,8 +10,7 @@ from typing import Dict, List, Sequence, Tuple
 from agents.provider.estimation.llm_client import COST_MULTIPLIER_BOUNDS
 from agents.provider.estimation.requirement import SURFACE_FEATURES
 
-#: Numerical insurance on the normal equations, far too small to change a
-#: well-posed fit.
+# Keeps the normal equations invertible; far too small to change a well-posed fit.
 RIDGE_EPSILON = 1e-8
 
 #: Observations required per fitted parameter before the regression is used.
@@ -23,19 +22,14 @@ GUARD_RIDGE_LAMBDA = 1.0
 
 
 def _solve(matrix: List[List[float]], rhs: List[float]) -> List[float]:
-    """Gaussian elimination with partial pivoting.
-
-    Hand-rolled to keep the estimation package on the stdlib, like the
-    simulator. The systems here are at most 6×6.
-    """
+    """Gaussian elimination with partial pivoting (the systems are at most 6×6)."""
     n = len(rhs)
     augmented = [row[:] + [rhs[i]] for i, row in enumerate(matrix)]
     for col in range(n):
         pivot = max(range(col, n), key=lambda r: abs(augmented[r][col]))
         if abs(augmented[pivot][col]) < 1e-14:
-            # Structurally singular even after ridging: the column carries no
-            # information in this fold. Zeroing its coefficient is the honest
-            # answer — the feature cannot be used, so it is not used.
+            # Singular even after ridging: the column carries no information, so its
+            # coefficient is zero.
             continue
         augmented[col], augmented[pivot] = augmented[pivot], augmented[col]
         pivot_value = augmented[col][col]
@@ -106,9 +100,8 @@ def fit_linear(
 
     k = len(usable)
 
-    # Standardise only when a statistical penalty is being applied: with
-    # ridge_lambda = 0 the scales below are all 1.0 and the arithmetic is
-    # exactly what it was before.
+    # Standardise only when a penalty is applied; with ridge_lambda = 0 the scales
+    # are all 1.0.
     if ridge_lambda > 0.0:
         scales = [
             statistics.pstdev([row[name] for row in rows]) or 1.0 for name in usable
@@ -194,11 +187,9 @@ def fit_cost_multiplier(
     targets = [math.log(cost / tier_level_cost) for _, cost in usable]
 
     if guard:
-        # Count the parameters this fit would actually estimate — features that
-        # survive the zero-variance screen, plus the intercept — and refuse if
-        # the history cannot support them. Screening first matters: on a history
-        # where two columns are constant, the fit is univariate and needs 4
-        # observations, not 8.
+        # Count the parameters the fit would estimate (features that survive the
+        # zero-variance screen, plus the intercept) and withhold the fit if the history
+        # cannot support them.
         informative = [
             name for name in feature_names
             if len({row.get(name) for row in rows}) > 1

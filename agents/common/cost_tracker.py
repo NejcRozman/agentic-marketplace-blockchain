@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class LLMCostCallback(BaseCallbackHandler):
     """LangChain callback that records the cost of each LLM call in a CostTracker."""
-    
+
     def __init__(
         self,
         cost_tracker: "CostTracker",
@@ -30,7 +30,7 @@ class LLMCostCallback(BaseCallbackHandler):
         self.scope = scope
         self.total_tokens = 0
         self.total_cost = 0.0
-    
+
     @staticmethod
     def _reported_cost(response):
         """The provider's own billed cost of this call (OpenRouter's ``usage.cost``), or None.
@@ -127,7 +127,7 @@ class LLMCostCallback(BaseCallbackHandler):
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
-                
+
         except Exception as e:
             logger.warning(f"Failed to track LLM cost: {e}")
 
@@ -140,11 +140,11 @@ class CostTracker:
     """
 
     EFFORT_LEVELS = ("low", "medium", "high")
-    
+
     def __init__(self, agent_id: int, config):
         self.agent_id = agent_id
         self.config = config
-        
+
         # Costs in USD.
         self.total_llm_costs = 0.0
         self.total_gas_costs = 0.0
@@ -327,7 +327,7 @@ class CostTracker:
                 except (TypeError, ValueError):
                     pass
         return fallback
-    
+
     def start_service_execution(self, effort_tier: str = None):
         """Open an execution window: LLM costs from now on count as service execution."""
         self._current_execution_llm_cost = 0.0
@@ -339,7 +339,7 @@ class CostTracker:
             "📊 Started tracking service execution costs (effort=%s)",
             self._current_execution_effort_tier,
         )
-    
+
     def add_llm_cost(
         self,
         cost_usd: float,
@@ -365,7 +365,7 @@ class CostTracker:
             self.reasoning_output_tokens += int(output_tokens or 0)
 
         logger.debug(f"💰 LLM cost: ${cost_usd:.4f} ({context})")
-    
+
     def add_gas_cost(self, gas_used: int, gas_price_wei: int, context: str = "transaction"):
         """Record a transaction's gas cost.
 
@@ -388,20 +388,20 @@ class CostTracker:
         gas_price_gwei = gas_price_wei / 1e9
         cost_eth = (gas_used * gas_price_gwei) / 1e9
         cost_usd = cost_eth * self.config.eth_price_usd
-        
+
         self.total_gas_costs += cost_usd
         logger.debug(f"⛽ Gas cost: ${cost_usd:.4f} ({context}, {gas_used} gas @ {gas_price_gwei:.4f} gwei)")
-    
+
     def add_revenue(self, revenue_usd: float, context: str = "service_completion"):
         self.total_revenue += revenue_usd
         logger.info(f"💵 Revenue: ${revenue_usd:.4f} USD ({context})")
-    
+
     def end_service_execution(self, effort_tier: str = None) -> float:
         """Close the execution window, record the job's cost in the history and return it (USD)."""
         if not self._is_executing_service:
             logger.warning("end_service_execution called but no service execution in progress")
             return 0.0
-        
+
         execution_cost = self._current_execution_llm_cost
         resolved_effort_tier = self.normalize_effort_tier(
             effort_tier or self._current_execution_effort_tier
@@ -442,7 +442,7 @@ class CostTracker:
                 sample=execution_cost,
                 alpha=self._execution_cost_ema_alpha,
             )
-        
+
         logger.info(
             "📊 Service execution complete: $%.6f (effort=%s, tokens=%s+%s)",
             execution_cost,
@@ -455,7 +455,7 @@ class CostTracker:
         self._current_execution_output_tokens = 0
 
         return execution_cost
-    
+
     def get_execution_cost_history(self) -> list:
         """Past execution costs (USD), oldest first."""
         return self.service_execution_history.copy()
@@ -596,7 +596,7 @@ class CostTracker:
 
         recovered_overhead = max(0.0, self.total_revenue - finalized_execution_cost)
         return max(0.0, historical_non_execution_costs - recovered_overhead)
-    
+
     def get_net_balance(self) -> float:
         """Revenue minus all costs, in USD."""
         total_costs = self.total_llm_costs + self.total_gas_costs
@@ -637,7 +637,7 @@ class CostTracker:
     def log_summary(self):
         total_costs = self.total_llm_costs + self.total_gas_costs
         net_balance = self.get_net_balance()
-        
+
         logger.info(f"""
 ╔══════════════════════════════════════════════════════════╗
 ║  Agent #{self.agent_id} - Financial Summary     
