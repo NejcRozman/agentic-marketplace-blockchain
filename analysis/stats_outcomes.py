@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Outcome statistics quoted in Results 6.1, 6.2, 6.4, 6.5 and Discussion 7.4.
+"""Outcome statistics quoted in the Results and Discussion, printed by section number.
 
-One definition throughout, the one Figure 9 (fig_rq2_mechanism) uses: a per-job
+One definition throughout, the one fig_rq2_mechanism uses: a per-job
 quantity is first summarised within a seed (mean, or median for margins), and
 the reported value is the mean of these per-seed values over the 40 seeds;
 seeds in which the group won nothing are skipped. Win share is the share of the
 30 auctions the group won. Realised margin = price / execution cost − 1.
 Decline rate = declines / (declines + bids attempted), from the agent's log
 (data.decline_rate); conditions not reported in the paper are left out.
-Gas share = mean gas / (mean net balance + mean gas), quoted in Discussion 7.4.
+Gas share = mean gas / (mean net balance + mean gas).
 
     python -m analysis.stats_outcomes
 """
 import json
 import statistics as st
 
-from analysis.dataset import requirement_means
 from agents.common import paths
-from analysis.data import (LEDGER, NOT_IN_FAMILY, EXEC_COST_LINE, ADAPTIVE_BID_LINE, run_metrics, decline_rate, final_net,
-                                             ok_runs, outcomes, provider_groups)
+from analysis.data import (ADAPTIVE_BID_LINE, EXEC_COST_LINE, LEDGER, NOT_IN_FAMILY, decline_rate, final_net,
+                           ok_runs, outcomes, provider_groups, run_metrics)
+from analysis.dataset import requirement_means
 
 
 def per_seed(cell, group, field, summary=st.mean):

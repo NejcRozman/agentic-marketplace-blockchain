@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""Dataset v3 — execution cost vs quality rating, by designed depth.
+"""Execution cost against quality rating of the recorded service dataset (not in the paper).
 
 Each point is one of the 90 recorded executions, coloured by the requirement's
-designed depth. The between/within-requirement split is given as correlations
-in the corner rather than drawn: joining each requirement's three runs was
-tried, but runs of one requirement also differ in cost, so the lines tangled.
-
-Depth is ordered (locate < enumerate < contrast < reconcile). It uses four
-distinct hues, assigned light to dark: a one-hue ramp was tried first but its
-middle steps were too close to tell apart. This chart describes the dataset,
-not strategies, so the strategy colours do not apply.
+designed depth (locate < enumerate < contrast < reconcile). The correlations
+between and within requirements are printed in the corner.
 
     python -m analysis.fig_dataset_cost_quality
 """
@@ -18,10 +12,7 @@ import matplotlib.pyplot as plt
 from analysis import style
 from analysis.dataset import DEPTHS, between_within, by_requirement
 
-# Four distinct palette hues rather than one-hue steps: four shades of blue
-# could not be told apart at this marker size. This set is the best-separated
-# four of the palette, all pairs (worst-pair CVD ΔE 16.2, normal-vision 19.6),
-# assigned light to dark so the order locate -> reconcile still reads.
+# Four distinct hues, light to dark, so the order of the depths still reads.
 RAMP = ["#eda100", "#e87ba4", "#008300", "#4a3aa7"]   # yellow, pink, green, violet
 
 

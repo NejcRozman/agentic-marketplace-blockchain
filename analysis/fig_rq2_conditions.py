@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""H2 — LLM-Estimate across conditions: Δ final net balance, LLM-Estimate − baseline.
+"""RQ2: LLM-Estimate minus baseline, final net balance, across conditions.
 
 Circles = against Adaptive, squares = against Regression. Each point is the mean
 per-seed difference in final net balance over 40 seed-paired runs; whiskers are
-95% t intervals; a filled marker means the difference is significant (Holm-adjusted, RQ2 family). Panels share
-one x-scale because they show the same measure. All cells: abstention (O2c) on,
-20 s commit window, prior 80.
+95% t intervals; a filled marker means the difference is significant
+(Holm-adjusted within the RQ2 family). All conditions: decline rule on.
 
   a) reputation weight, 1 vs 1, gpt-oss-20b; dashed line: mixed-model fit vs
-     Adaptive (stats_rw_gradient, Eq. 12), diamond: its zero crossing w*
-  b) model, rw = 20, 1 vs 1
-  c) market composition, rw = 20, gpt-oss-20b: one LLM-Estimate agent against
+     Adaptive (stats_rw_gradient), diamond: its zero crossing w*
+  b) model, w = 0.2, 1 vs 1
+  c) market composition, w = 0.2, gpt-oss-20b: one LLM-Estimate agent against
      one or three baseline agents (baseline arm = per-agent mean)
 
-rw = 80 vs Regression is cell C_o2c_on_rw80: config-identical to the block B
-cell that would have been generated, and run instead of it.
+w = 0.8 against Regression is the decline-rule condition C_o2c_on_rw80, which is
+configured exactly as the rest of the sweep.
 
     python -m analysis.fig_rq2_conditions
 """
@@ -82,7 +81,7 @@ W_ROWS = [0.0, 0.2, 0.35, 0.5, 0.65, 0.8]
 
 
 def fitted_gradient(ax):
-    """Overlay the mixed model of Eq. (12) on panel a: fitted Δ against Adaptive
+    """Overlay the mixed model (stats_rw_gradient) on panel a: fitted Δ against Adaptive
     at each row, and the crossing point w* where it reaches zero."""
     res = grad.fit(grad.frame())
     b0, b1 = res.params["Intercept"], res.params["w"]

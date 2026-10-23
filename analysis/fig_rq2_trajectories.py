@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""H2 — LLM-Estimate vs the two non-LLM estimators: net balance over the 30 auctions.
+"""RQ2: net balance over the 30 auctions for LLM-Estimate against the two non-LLM estimators.
 
-rw = 20, 1 vs 1, gpt-oss-20b, 40 seed-paired runs per pairing. All arms price
-with the adaptive controller; they differ in the cost estimate it is given:
-Adaptive a running average of past job costs (the same agent as H1's Adaptive),
-Regression a ridge regression on three surface features of the requirement
-(prompt length and two counts) fitted to the agent's own completed jobs, LLM-Estimate an LLM
-estimate of the job from its requirement text.
-Abstention (O2c) on and a 20 s commit window, as in all of block A.
+w = 0.2, 1 vs 1, gpt-oss-20b, 40 seed-paired runs per pairing, decline rule on.
+All agents price with the adaptive margin and differ in the cost estimate it is
+given: Adaptive a running average of past job costs, Regression a ridge
+regression on three surface features of the requirement fitted to the agent's
+own completed jobs, LLM-Estimate an LLM estimate from the requirement text.
 
 Lines are the mean across seeds; shading is the 95% CI of that mean. Both
-panels share one y-scale: LLM-Estimate is the same agent in both, so its level is
-directly comparable across opponents.
+panels share one y-scale, so LLM-Estimate's level compares across opponents.
 
     python -m analysis.fig_rq2_trajectories
 """

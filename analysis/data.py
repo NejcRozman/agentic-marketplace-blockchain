@@ -1,10 +1,9 @@
-"""Ledger-backed data access for the paper figures.
+"""Access to the recorded runs, for every figure, table and statistic.
 
-The ledger (`experiments/data/s9_ledger.jsonl`) is the sole authority on which
-runs belong to a cell: only `status == "ok"` rows count, and each row names its
-own run directory. Globbing run directories instead would also pick up runs
-that crashed or were superseded — e.g. the eight half-finished gpt-4o-mini runs
-killed by the 2026-09-13 reboot.
+The ledger (`data/ledger.jsonl`) decides which runs belong to a condition (cell):
+only rows with `status == "ok"` count, and each row names its own run directory.
+Run directories that are not in the ledger (crashed or repeated runs) are never
+read.
 
 Arms are identified by provider group name. Cells with several agents per arm
 (2v2, 1v3, 3v1) are reduced to the per-agent mean so they stay comparable with
@@ -19,13 +18,11 @@ import statistics as st
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
-from pathlib import Path
 from typing import Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
 from agents.common import paths
 
-REPO = paths.REPO_ROOT
 LEDGER = paths.LEDGER
 N_AUCTIONS = 30
 
@@ -112,11 +109,10 @@ def paired_difference(cell: str, a: str, b: str) -> Interval:
 
 
 # ---------------------------------------------------------------------------
-# Significance (Section 5.7): two-sided paired t-test per condition, p-values
-# Holm-adjusted within each research question. A condition is one cell; its
-# contrast is the X_ group against the other group. The self-play check and the
-# two unreported regression variants are in no family. Cells that do not yet
-# have all 40 runs are left out until they do.
+# Significance: two-sided paired t-test per condition, p-values Holm-adjusted
+# within each research question. A condition is one cell; its contrast is the X_
+# group against the other group. The self-play check and the two unreported
+# regression variants are in no family; cells with fewer than 40 runs are left out.
 # ---------------------------------------------------------------------------
 
 NOT_IN_FAMILY = {"S91_selfplay_adaptive", "E_xd_vs_rd_v3", "E_xd_vs_rnaive_v3"}
@@ -279,7 +275,7 @@ def outcomes(cell: str, group: str) -> List[SeedOutcome]:
 
 
 def decline_rate(cell: str, group: str) -> float:
-    """Share of eligible auctions the group's agent declined (abstention, O2c).
+    """Share of eligible auctions the group's agent declined (the decline rule).
 
     Counted from the agent's own log ("declined:" is written once per decline),
     so an opponent's declines are never mixed in. Denominator = declines + bids
@@ -313,9 +309,8 @@ class Estimate:
 def estimates(cell: str, group: str) -> List[Estimate]:
     """Every per-job execution-cost estimate the group's agent made, all seeds.
 
-    Estimator agents (LLM-Estimate, Regression) log one line per job:
-    predicted = the medium-tier cost level × the job's multiplier — the same
-    rule as experiments/analysis/in_market_sigma.py. Adaptive has no per-job
+    Estimator agents (LLM-Estimate, Regression) log one line per job: predicted
+    = the medium-tier cost level × the job's multiplier. Adaptive has no per-job
     estimate: it applies its current running-average execution cost to every
     job, read from the last cost line before each of its bids; the job is
     identified through the auction's sampled requirement.

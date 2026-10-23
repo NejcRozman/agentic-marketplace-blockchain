@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""H2 — why LLM-Estimate wins at low reputation weight and loses at high.
+"""RQ2: why LLM-Estimate wins at low reputation weight and loses at high.
 
 LLM-Estimate (red) vs Adaptive (blue), 1 vs 1, gpt-oss-20b, by reputation
 weight. Each point is the mean over 40 seeds of a per-seed value; whiskers are
@@ -11,7 +11,7 @@ once.
   b) execution cost of the jobs each agent won (USD)
   c) consumer quality rating of the jobs each agent won. An agent's reputation
      is the running mean of these ratings — final reputation matches this to
-     within 0.004 at every rw — so it is not plotted separately.
+     within 0.004 at every w — so it is not plotted separately.
   d) price received per job won (winning bid, USD)
   e) realized margin per job won: price / execution cost − 1 (median within seed)
 

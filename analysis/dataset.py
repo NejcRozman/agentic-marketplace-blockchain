@@ -1,9 +1,7 @@
-"""Dataset v3 — the recorded service executions every market run replays.
+"""The recorded service dataset that every market run replays.
 
-Path is the one the market uses (`sampled_dataset_dir` in s9_base_v3.yaml):
-`.../executor_tier_dataset_v3/final`, 90 runs = 30 requirements x 3 recorded
-executions. The folder above it holds 94 runs / 34 requirements; the extra four
-were not part of the market and are excluded here.
+`data/dataset/final/runs.jsonl`: 90 recorded executions, three for each of the
+30 requirements.
 """
 import collections
 import json

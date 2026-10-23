@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""H2 — how accurately each agent estimated the execution cost of a job (table).
+"""RQ2: how accurately each agent estimated the execution cost of a job (table).
 
-In-market estimates at rw = 20, 1 vs 1, 40 seeds per cell. Scoring follows the
-S8 convention (experiments/analysis/in_market_sigma.py): true cost = the
+In-market estimates at w = 0.2, 1 vs 1, 40 seeds per cell. True cost = the
 requirement's mean over its three recorded executions; residual =
 log(estimate / true cost).
 
+  fallback      share of estimates where the estimator had no fit to apply and
+                used the moving average: LLM-Estimate before its first
+                calibration or when its call failed or missed the deadline;
+                Regression while its guard withholds the fit or it has no usable
+                observation (see data.estimates)
   σ             spread of the residuals after removing their mean (a constant
                 bias is learnable from the agent's own history, so it is not
-                charged) — lower is better
-  σ excl. cold  the same, without fallback estimates, where the estimator had
-                no fit to apply and used the moving average: LLM-Estimate before
-                its first calibration or when its call failed or missed the
-                deadline; Regression while its guard withholds the fit or it has
-                no usable observation (see data.estimates)
-  correlation   Pearson correlation of log estimate with log true cost — does
+                charged); lower is better
+  correlation   Pearson correlation of log estimate with log true cost: does
                 the estimate tell cheap jobs from expensive ones? Adaptive gives
                 every job its current running average, so ~0 by construction
   bias          geometric-mean ratio estimate / true cost (1 = unbiased)
 
-Each agent is pooled over its rw = 20 cells against both opponents. Oracle knows
+σ, correlation and bias exclude the fallback estimates.
+
+Each agent is pooled over its w = 0.2 cells against both opponents. Oracle knows
 the true cost, so σ = 0 and correlation = 1 by definition (shown as reference).
 
     python -m analysis.table_rq2_estimation_accuracy
@@ -29,7 +30,6 @@ import statistics as st
 
 from analysis.data import estimates
 from analysis.dataset import corr, debiased_sigma, requirement_means
-
 
 # (agent, model, [(cell, group), ...])
 ROWS = [
@@ -58,8 +58,6 @@ def score(ests, truth):
 
 
 def main():
-    """Paper table: fallback share, then σ, correlation and bias without the
-    fallback (cold) estimates, as Section 5.6 defines the measure."""
     truth = requirement_means()
     head = ["Estimator", "Model", "Fallback", "σ", "Correlation", "Bias"]
     body = [["Oracle", "—", "—", "0", "1", "1"]]

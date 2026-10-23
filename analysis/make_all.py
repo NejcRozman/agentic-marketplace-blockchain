@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Regenerate every paper figure, table and statistic (tables are printed as Markdown and LaTeX).
+"""Regenerate every figure, table and statistic of the paper (tables are printed as Markdown and LaTeX).
 
-Run with the project virtualenv (stats_rw_gradient needs statsmodels):
-
-    .venv/bin/python -m analysis.make_all
+    python -m analysis.make_all
 """
 from analysis import (
     fig_bridge_pricer_vs_estimator,

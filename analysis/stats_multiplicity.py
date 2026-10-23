@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Per-condition paired tests with Holm's correction within each research question (Section 5.7).
+"""Per-condition paired tests with Holm's correction within each research question.
 
 The computation lives in data.holm_table() so that figures and this listing use
 the same family definition; see there.
 
-    .venv/bin/python -m analysis.stats_multiplicity
+    python -m analysis.stats_multiplicity
 """
 from analysis.data import contrast, family, final_net, holm_table
 

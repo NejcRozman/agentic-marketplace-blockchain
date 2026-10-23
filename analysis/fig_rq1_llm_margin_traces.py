@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""H1 (appendix) — one run per LLM variant: the margin each agent chose, auction by auction.
+"""RQ1 (appendix): the margin each agent chose, auction by auction, in one run per LLM variant.
 
 Same seed in every panel, so every variant faces the same sequence of jobs.
 Row 1: LLM-Base against Adaptive with its 20% floor and with m_min = 0;
@@ -30,15 +30,13 @@ def draw(ax, seq, key):
     c = style.color(key)
     xs = [b.auction for b in seq]
     ys = [100 * b.margin for b in seq]
-    clipped = ys if YLIM is None else [min(max(y, YLIM[0]), YLIM[1]) for y in ys]
+    clipped = [min(max(y, YLIM[0]), YLIM[1]) for y in ys]
     ax.plot(xs, clipped, color=c, lw=1.2, alpha=0.7, zorder=2)
     for b, x, y, yc in zip(seq, xs, ys, clipped):
         if y != yc:
             ax.plot(x, yc, "^" if y > yc else "v", ms=style.MS + 1, color=c, zorder=3)
         else:
             ax.plot(x, y, "o", ms=style.MS, mec=c, mew=style.MEW, mfc=c if b.won else "white", zorder=3)
-    if YLIM is None:
-        return []
     return [(b.auction, round(100 * b.margin, 1), b.won) for b in seq if not YLIM[0] <= 100 * b.margin <= YLIM[1]]
 
 
@@ -75,8 +73,7 @@ def main():
         ax.set_title(name, color=style.INK, fontweight="bold", fontsize=6.5)
         ax.set_xlim(0, N_AUCTIONS + 1)
         ax.set_xticks([0, 15, 30])
-        if YLIM is not None:
-            ax.set_ylim(YLIM[0] - 4, YLIM[1] + 4)
+        ax.set_ylim(YLIM[0] - 4, YLIM[1] + 4)
         ax.set_xlabel("Auction")
         ax.text(0.5, -0.45, f"{letter})", transform=ax.transAxes, ha="center", va="top",
                 fontsize=style.LETTER_FS, color=style.INK)

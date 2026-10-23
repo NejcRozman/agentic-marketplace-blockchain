@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RQ2 — how LLM-Estimate's advantage depends on the reputation weight w (Section 5.7, S3).
+"""RQ2 — how LLM-Estimate's advantage depends on the reputation weight w.
 
 Linear mixed model on the per-seed paired differences Δ = N(LLM-Estimate) − N(opponent)
 of the reputation-weight sweep (gpt-oss-20b, 1 vs 1, decline rule on):
@@ -12,9 +12,7 @@ zero — is w* = −β0/β1 against Adaptive and −(β0 + β2)/β1 against Regr
 95% percentile intervals from a bootstrap that resamples seeds (all conditions of a
 seed move together, preserving the pairing).
 
-Must be run with the project virtualenv (statsmodels):
-
-    .venv/bin/python -m analysis.stats_rw_gradient [--boot 2000]
+    python -m analysis.stats_rw_gradient [--boot 2000]
 """
 import argparse
 import warnings
@@ -39,7 +37,7 @@ CELLS = [
     (0.35, "Regression", "B_gptoss20b_rw35_xd_vs_rguarded",  "B_r_guarded"),
     (0.50, "Regression", "B_gptoss20b_rw50_xd_vs_rguarded",  "B_r_guarded"),
     (0.65, "Regression", "B_gptoss20b_rw65_xd_vs_rguarded",  "B_r_guarded"),
-    # config-identical to the sweep cell that would have been generated at w = 0.8
+    # the decline-rule condition at w = 0.8, configured exactly as the sweep
     (0.80, "Regression", "C_o2c_on_rw80",                    "B_r_guarded"),
 ]
 

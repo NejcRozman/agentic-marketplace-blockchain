@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""H1 — adaptive minus band, final net balance, by reputation weight and composition.
+"""RQ1: Adaptive minus Random-in-band, final net balance, by reputation weight and composition.
 
-Each point is the mean per-seed difference in final net balance (adaptive −
-band, USD) over 40 seed-paired runs; whiskers are 95% t intervals. A filled
-marker means the difference is significant: paired t-test, Holm-adjusted within
-the RQ1 family (data.holm_table, Section 5.7). In 2v2/1v3/3v1 each arm is the
+Each point is the mean per-seed difference in final net balance (Adaptive −
+Random-in-band, USD) over 40 seed-paired runs; whiskers are 95% t intervals. A
+filled marker means the difference is significant: paired t-test, Holm-adjusted
+within the RQ1 family (data.holm_table). In 2v2/1v3/3v1 each arm is the
 per-agent mean. Both panels share one x-scale because they show the same
 measure.
 
@@ -31,7 +31,7 @@ COMPOSITION = [
 ]
 
 
-def forest(ax, rows, title, subtitle):
+def forest(ax, rows):
     c = style.color("adaptive")
     results = [(label, paired_difference(cell, ADAPTIVE, BAND), significant(cell)) for label, cell in rows]
     ys = list(range(len(results)))[::-1]
@@ -47,10 +47,7 @@ def forest(ax, rows, title, subtitle):
     ax.grid(axis="y", visible=False)
     ax.spines["left"].set_visible(False)
     ax.tick_params(axis="y", length=0)
-    # Which side wins, so the reader need not work out the sign of the difference.
-    # Δ = adaptive − band; the exact definition is in the caption.
-    # The axis label sits between the two hints on one line.
-    # Direction hints on their own line under the ticks, the axis label beneath.
+    # Direction hints under the ticks (which side wins), the axis label beneath them.
     for x, ha, text in ((0.0, "left", "← Random-in-band"), (1.0, "right", "Adaptive →")):
         ax.text(x, -0.25, text, transform=ax.transAxes, ha=ha, va="top",
                 fontsize=style.HINT_FS, color=style.INK_2)
@@ -63,8 +60,8 @@ def main():
     style.apply(column=True)
     fig, axes = plt.subplots(1, 2, figsize=(style.COL_WIDTH, 1.9), sharex=True,
                              gridspec_kw={"width_ratios": [1, 1]})
-    a = forest(axes[0], RW, "By reputation weight", "1 vs 1")
-    b = forest(axes[1], COMPOSITION, "By market composition", "rw = 20, per-agent means")
+    a = forest(axes[0], RW)
+    b = forest(axes[1], COMPOSITION)
     # Panels are identified by letter only; the caption says what each shows.
     for letter, ax in zip("ab", axes):
         ax.text(0.5, -0.60, f"{letter})", transform=ax.transAxes, ha="center", va="top",

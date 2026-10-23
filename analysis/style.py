@@ -1,10 +1,7 @@
 """Shared figure style. One colour per strategy, fixed across the whole paper.
 
-Colours come from the validated default categorical palette, assigned in slot
-order. Slots 1-3 validate for colour-vision deficiency across all pairs, so the
-three heuristics — which appear together most often — take them. Later
-strategies (LLM variants, X_d, R_guarded, oracle) are added here when their
-figures are designed; a strategy never changes colour once assigned.
+The colours are distinguishable under colour-vision deficiency for every pair
+of strategies that appear in the same figure.
 """
 from pathlib import Path
 
@@ -21,29 +18,20 @@ STRATEGIES = {
     "band":     ("Random-in-band",           "#eb6834"),   # slot 2 orange
     "random":   ("Random",                   "#1baf7a"),   # slot 3 aqua
     # One colour for every LLM pricing variant; the variant is identified by panel
-    # or marker shape. Magenta: violet (#4a3aa7) passed the checks but read too
-    # close to adaptive's blue on screen; this passes all-pairs CVD and
-    # normal-vision checks against the three above with a wider margin from blue.
+    # or marker shape.
     "llm":      ("LLM",                      "#b5179e"),   # magenta
 
-    # H2. Every H2 arm prices with the adaptive controller; they differ in where
-    # the cost estimate comes from. H is the same agent as H1's "Adaptive"
-    # (h2_strategy_3, no estimator), so it keeps the same blue.
-    # The three new colours were chosen by testing every candidate triple
-    # all-pairs against H's blue and the LLM pricer's magenta (they meet in the
-    # H1-H2 bridge figure). X_d's red would clash with band's orange, but band
-    # does not appear in H2.
-    # Names say where each agent's cost estimate comes from. The historical-
-    # average agent keeps its H1 name, Adaptive: it is the same agent. Code
-    # names in the cells: B_none, B_r_guarded, X_decomposed, X_oracle_bound.
-    "h":        ("Adaptive",                 "#2a78d6"),   # = H1 adaptive, blue
+    # RQ2: every agent prices with the adaptive margin and differs in where its
+    # cost estimate comes from. Group names in the cells: B_none, B_r_guarded,
+    # X_decomposed, X_oracle_bound. "h" is the same agent as RQ1's Adaptive.
+    "h":        ("Adaptive",                 "#2a78d6"),   # blue, as RQ1's Adaptive
     "xd":       ("LLM-Estimate",             "#e34948"),   # red
     "rguarded": ("Regression",               "#eda100"),   # yellow
     "oracle":   ("Oracle",                   "#9b2f2f"),   # dark red: LLM-Estimate made perfect
 }
 
 #: LLM pricing variants. Each adds to the one before it (cumulative).
-#: key -> (display name, S9.1 group-name suffix)
+#: key -> (display name, suffix of the group name in the RQ1 cells)
 LLM_VARIANTS = {
     "base":    ("LLM-Base",    "R0"),    # auction + own economics/history
     "band":    ("LLM-Band",    "R1a"),   # + keep margin within the heuristic band
@@ -57,7 +45,6 @@ MUTED = "#8a8984"
 GRID = "#e4e3df"
 ZERO = "#9a9993"
 
-#: full text width of a two-column journal page, inches
 TEXT_WIDTH = 7.0    # page width of the two-column final layout (figure*), inches
 COL_WIDTH = 3.46    # one column of the final layout (figure), inches
 

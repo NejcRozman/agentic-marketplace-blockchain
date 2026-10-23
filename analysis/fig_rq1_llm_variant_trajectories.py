@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""H1 — LLM pricing variants vs adaptive: net balance over the 30 auctions.
+"""RQ1: net balance over the 30 auctions for the LLM pricing variants against Adaptive.
 
 w = 0.2, 1 vs 1, 40 seed-paired runs per panel, gpt-oss-20b. Row 1: LLM-Base
 against Adaptive with its usual 20% floor (a) and with the floor at 0 (b,
-matched pricing range); row 2: LLM-Band, LLM-History, LLM-Reflect (c–e). Lines are the mean across
-seeds; shading is the 95% CI of that mean. All panels share one y-scale: the
-opponent and condition are identical, so levels are directly comparable —
-which matters here, because a variant can beat adaptive by starving it of jobs
-rather than by earning more itself.
+matched pricing range); row 2: LLM-Band, LLM-History, LLM-Reflect (c–e). Lines
+are the mean across seeds; shading is the 95% CI of that mean. All panels share
+one y-scale, because a variant can beat Adaptive by starving it of jobs rather
+than by earning more itself.
 
     python -m analysis.fig_rq1_llm_variant_trajectories
 """
@@ -18,10 +17,8 @@ from analysis.data import N_AUCTIONS, mean_ci, paired_difference, significant, t
 
 ADAPTIVE = "B_s3"
 
-#: (title, cell, LLM group, grid slot). Row 1: LLM-Base against Adaptive with its
-#: 20% floor and with the floor lowered to 0 (matched pricing range), side by
-#: side; row 2: the other three variants. Slots are column spans in a 6-column
-#: grid so every panel has the same width.
+#: (title, cell, LLM group, grid slot). Slots are column spans in a 6-column grid,
+#: so every panel has the same width.
 PANELS = [
     ("LLM-Base",               "S91_var_R0_vs_s3",        "X_llm_R0",  (0, slice(1, 3))),
     ("LLM-Base, $m_{\\min}=0$", "S91_var_R0_vs_s3_floor0", "X_llm_R0",  (0, slice(3, 5))),

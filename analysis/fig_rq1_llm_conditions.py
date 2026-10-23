@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""H1 — LLM pricing across conditions: Δ final net balance, LLM − heuristic.
+"""RQ1: LLM minus heuristic, final net balance, across conditions.
 
-LLM-History (the best variant at rw = 20) is shown in every condition;
-LLM-Base is added in panel a) as a contrast. Each point is the mean per-seed
-difference in final net balance over 40 seed-paired runs; whiskers are 95% t
-intervals; a filled marker means the difference is significant (Holm-adjusted, RQ1 family). Panels share one
-x-scale because they show the same measure.
+LLM-History (the best variant at w = 0.2) is shown in every condition, and
+LLM-Base is added as a contrast where it was run. Each point is the mean
+per-seed difference in final net balance over 40 seed-paired runs; whiskers are
+95% t intervals; a filled marker means the difference is significant
+(Holm-adjusted within the RQ1 family).
 
   a) reputation weight (and Adaptive with m_min = 0), vs Adaptive, 1:1, gpt-oss-20b
   b) heuristic opponent, w = 0.2, 1:1 and 1:3, gpt-oss-20b

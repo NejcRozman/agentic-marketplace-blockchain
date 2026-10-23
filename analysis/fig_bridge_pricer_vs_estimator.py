@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""H1 <-> H2 bridge — the same LLM used as a pricer and as a cost estimator, against Adaptive.
+"""RQ1 and RQ2: the same LLM used as a price-setter and as a cost estimator, against Adaptive.
 
-Both on gpt-oss-20b, both against the same opponent (Adaptive: the adaptive
-controller with a historical-average cost estimate), 1 vs 1, 40 seed-paired
-runs per cell. Each approach is run as designed:
-  - LLM as pricer (H1, LLM-History): sets the price itself; cannot decline;
-    40 s commit window (its ReAct call is slow).
-  - LLM as estimator (H2, LLM-Estimate): estimates the job's cost; the adaptive
-    controller sets the price; abstention (O2c) on; 20 s commit window.
+Both on gpt-oss-20b, both against Adaptive, 1 vs 1, 40 seed-paired runs per
+cell. Each approach is run as designed:
+  - LLM as pricer (LLM-History): sets the price itself; cannot decline;
+    40 s commit window (its tool-calling loop is slow).
+  - LLM as estimator (LLM-Estimate): estimates the job's cost; the adaptive
+    margin sets the price; decline rule on; 20 s commit window.
 The commit window does not constrain the estimator (0 late commits, <= 3
-deadline-exceeded estimates per ~1,000 bids). Abstention is part of the H2
-design — it acts on the per-job estimate — and the estimator still beats
-Regression at rw = 20 with abstention off (see the abstention table).
+deadline-exceeded estimates per ~1,000 bids).
 
-  a) LLM as pricer vs Adaptive, rw = 20, net balance over auctions
-  b) LLM as estimator vs Adaptive, rw = 20, same y-scale as a)
-  c) Δ final net balance vs Adaptive at rw = 20, 50, 80, both approaches
+  a) LLM as pricer vs Adaptive, w = 0.2, net balance over auctions
+  b) LLM as estimator vs Adaptive, w = 0.2, same y-scale as a)
+  c) Δ final net balance vs Adaptive at w = 0.2, 0.5, 0.8, both approaches
 
     python -m analysis.fig_bridge_pricer_vs_estimator
 """

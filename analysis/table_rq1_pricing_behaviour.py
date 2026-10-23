@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""H1 — pricing behaviour of each strategy (table).
+"""RQ1: pricing behaviour of each strategy (table).
 
-rw = 20, 1 vs 1, gpt-oss-20b, 40 seeds per cell, each LLM variant against
+w = 0.2, 1 vs 1, gpt-oss-20b, 40 seeds per cell, each LLM variant against
 adaptive. Margin = bid / cost basis − 1, the quantity each strategy chooses.
 
   median margin       median over all bids
@@ -22,7 +22,7 @@ must not count as below the floor. Only bids committed on chain count (see
 data.bid_sequences). Adaptive is pooled over its four LLM opponents.
 
 Also printed (quoted in the text): share of LLM bids below the agent's own cost
-basis, and the 90th-percentile margin of LLM-History and Adaptive at rw = 80.
+basis, and the 90th-percentile margin of LLM-History and Adaptive at w = 0.8.
 
     python -m analysis.table_rq1_pricing_behaviour
 """

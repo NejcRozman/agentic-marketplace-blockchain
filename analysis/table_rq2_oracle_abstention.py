@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""H2 — the value of perfect cost knowledge, and the effect of the abstention rule (table).
+"""RQ2: the value of perfect cost knowledge, and the effect of the decline rule (table).
 
 Oracle knows each job's true mean cost from the dataset: an upper bound on any
-cost estimator. Abstention (O2c) lets an agent decline an auction when its
+cost estimator. The decline rule lets an agent decline an auction when its
 believed cost plus overhead exceeds the highest price it has ever won at.
 
-rw = 20 unless stated, 1 vs 1, 40 seed-paired runs per cell, LLM-Estimate on
+w = 0.2 unless stated, 1 vs 1, 40 seed-paired runs per cell, LLM-Estimate on
 gpt-oss-20b. Δ = first agent − second agent, final net balance, 95% t interval.
 Declined = share of eligible auctions the first agent declined, counted from
 its own log.
@@ -19,7 +19,7 @@ from analysis.data import decline_rate, final_net, paired_difference, significan
 
 ORACLE, XD = "X_oracle_bound", "X_decomposed"
 
-# (section, comparison label, O2c label, cell, first group, second group)
+# (section, comparison label, decline rule, cell, first group, second group)
 ROWS = [
     ("Perfect cost knowledge", "Oracle vs Adaptive",     "on",  "A_oracle_vs_h",              ORACLE, "B_none"),
     ("Perfect cost knowledge", "Oracle vs Adaptive",     "off", "A_oracle_noO2c_vs_h",        ORACLE, "B_none"),
@@ -37,10 +37,10 @@ def main():
     head = ["Comparison", "Decline rule", "First agent net", "Second agent net",
             "Δ first − second [95% CI]", "First agent declined"]
     body, sections = [], []
-    for section, label, o2c, cell, a, b in ROWS:
+    for section, label, rule, cell, a, b in ROWS:
         d = paired_difference(cell, a, b)
         star = "*" if significant(cell) else ""
-        body.append([label, o2c, f"{st.mean(final_net(cell, a)):+.3f}", f"{st.mean(final_net(cell, b)):+.3f}",
+        body.append([label, rule, f"{st.mean(final_net(cell, a)):+.3f}", f"{st.mean(final_net(cell, b)):+.3f}",
                      f"{d.mean:+.3f} [{d.lo:+.2f}, {d.hi:+.2f}]{star}",
                      f"{100 * decline_rate(cell, a):.1f}%"])
         sections.append(section)

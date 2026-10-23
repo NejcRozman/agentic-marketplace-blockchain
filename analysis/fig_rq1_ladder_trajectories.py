@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""H1 — heuristic ladder: net balance over the 30 auctions, three pairings.
+"""RQ1: net balance over the 30 auctions for the three pairings of heuristic strategies.
 
-rw = 20, 1 vs 1, 40 seed-paired runs per pairing. Lines are the mean across
+w = 0.2, 1 vs 1, 40 seed-paired runs per pairing. Lines are the mean across
 seeds; shading is the 95% CI of that mean at each auction. Each panel has its
 own y-scale: the pairings with random bidding span ~±2 USD, band vs adaptive
 ~0.3, so a shared scale would flatten the third panel.

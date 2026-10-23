@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decision cost of the LLM components, for both roles (merged table, Section 6.5).
+"""Decision cost of the LLM, as price-setter and as cost estimator (table).
 
 Cost is what OpenRouter billed for the market module's LLM calls, per run of 30
 auctions (w = 0.2, 1 vs 1, 40 seeds per cell). "Net" has that cost subtracted;
@@ -8,7 +8,7 @@ estimation rows pool cost, calls and tokens over the cells against Adaptive and
 Regression, with net and Δ from the cell against Adaptive. Δ = LLM strategy −
 Adaptive, 95% t interval; * = significant after Holm (data.holm_table).
 
-    .venv/bin/python -m analysis.table_decision_cost
+    python -m analysis.table_decision_cost
 """
 import json
 import statistics as st

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dataset v3 summary (table), plus the statistics quoted in the text.
+"""The recorded service dataset by synthesis depth (table), and the statistics quoted in the text.
 
 One row per designed synthesis depth and one for the whole dataset. Cost is the
 executor's LLM cost of one recorded execution (USD); quality is the evaluator's
@@ -9,8 +9,7 @@ rating (0-100); retrieval rounds are summed over a job's prompts.
 """
 import statistics as st
 
-from analysis.dataset import (DEPTHS, between_within, corr, runs,
-                                                share_between)
+from analysis.dataset import DEPTHS, between_within, corr, runs, share_between
 
 
 def row(label, rs):
