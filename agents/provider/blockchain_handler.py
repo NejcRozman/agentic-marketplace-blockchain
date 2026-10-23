@@ -13,9 +13,7 @@ import inspect
 import logging
 import pathlib
 import json
-import time
 import re
-import math
 import secrets
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -192,9 +190,8 @@ class BlockchainHandler:
     # Max random pre-reasoning delay (seconds) to desync providers detecting the same new auction.
     _BID_JITTER_MAX_SECONDS = 3.0
 
-    # The jitter above must never eat the commit window. A fixed 0-3s delay is
-    # 30% of a 10s phase (S7 §A.6.5), which is enough on its own to push every
-    # bid past the freshness gate below and produce a market with no bids at all.
+    # The jitter must never eat the commit window: a fixed 0-3 s delay is 30% of
+    # a 10 s phase, enough to push every bid past the freshness gate below.
     _JITTER_WINDOW_FRACTION = 0.15
 
     # Max random delay before revealing, mirroring the commit jitter above.
@@ -220,12 +217,8 @@ class BlockchainHandler:
     # phase closes. Measured on 160 real commits against a *forked* chain:
     # median 0.59s, p95 1.17s, max 5.56s from send to confirmation.
     #
-    # The default stays at the historic 10s, which is what the S1 equivalence
-    # fixture captured — changing it silently would invalidate that proof. S7's
-    # shortened phases (§A.6.5) opt in to a smaller value via config, because a
-    # 10s gate on a 10s commit window can never pass: `time_remaining` is at most
-    # the window itself, so every auction is skipped and the market records no
-    # bids at all rather than an error.
+    # Short commit windows need a smaller value via config: a 10 s gate on a 10 s
+    # window can never pass, so every auction would be skipped.
     _DEFAULT_BID_FRESHNESS_MIN_SECONDS = 10.0
     
     def __init__(
@@ -261,7 +254,7 @@ class BlockchainHandler:
         self.config = config
         self.initial_reputation_default = self.config.initial_reputation_default
 
-        # S7 §A.1 (D1/D3/D7): this agent's private RNG. Every controllable draw
+        # This agent's private RNG, derived from the run seed. Every controllable draw
         # below goes through it — never through the `random` module, whose global
         # generator is shared across agents and unstable under async interleaving.
         self._rng = agent_rng(getattr(self.config, "run_seed", None), agent_id)
@@ -274,12 +267,12 @@ class BlockchainHandler:
             (agent_id or 0) + self._REVEAL_RNG_STREAM_OFFSET,
         )
 
-        # S7 §A.6.5 / gate G-E.
+        # Minimum seconds left in a phase for a commit or reveal to be sent.
         self._bid_freshness_min_seconds = float(getattr(
             self.config, "bid_freshness_min_seconds", self._DEFAULT_BID_FRESHNESS_MIN_SECONDS
         ))
-        #: Commits that were mined after their commit phase closed. Must be zero
-        #: across the pilot before the phase durations are accepted (G-E).
+        #: Commits that were mined after their commit phase closed; the campaign
+        #: check rejects a run with any.
         self.late_commits = 0
         #: Commitments abandoned because the reveal window would have closed
         #: first. Each one is a forfeited auction, so this must also be zero.
@@ -314,12 +307,10 @@ class BlockchainHandler:
         self.llm_base_url = llm_base_url or self.config.openrouter_base_url
         self.llm_api_key = llm_api_key or self.config.openrouter_api_key
 
-        # Constructed here, *after* the LLM configuration above: the hybrid arm
-        # reads `self.llm_model` and `self.llm_api_key`, and placing this earlier
-        # crashed every X provider at startup with an AttributeError.
-        # S7 §B.2: arm R. `none` leaves H exactly as it was — no estimator is
-        # constructed and `_policy_economics` returns the history beliefs
-        # untouched.
+        # Constructed after the LLM configuration above: LLM-Estimate reads
+        # `self.llm_model` and `self.llm_api_key`.
+        # `none` (Adaptive) constructs no estimator, and `_policy_economics` returns
+        # the history beliefs untouched.
         estimator_mode = str(getattr(self.config, "cost_estimator", "none") or "none").lower()
         if estimator_mode not in cost_estimators.ESTIMATOR_MODES:
             raise ValueError(
@@ -351,10 +342,9 @@ class BlockchainHandler:
             self._cost_estimator = cost_estimators.RegressionCostEstimator(mode=estimator_mode)
         self._estimator_sampler: Optional[DatasetSampler] = None
 
-        # S7 §A.2 (D2): sampling comes from the estimation protocol's pinned block
-        # for this model — seed plus reasoning effort, or seed plus temperature,
-        # depending on the family. Resolved once so both call sites below cannot
-        # diverge from each other.
+        # Sampling comes from the block pinned for this model (seed plus reasoning
+        # effort, or seed plus temperature). Resolved once so both call sites below
+        # agree.
         self.llm_sampling_kwargs = chat_model_kwargs(
             self.llm_model,
             temperature_override=self.llm_temperature,
@@ -389,12 +379,9 @@ class BlockchainHandler:
         self._bid_failures: List[Dict[str, Any]] = []
         self._own_current_bid_by_auction: Dict[int, int] = {}
 
-        # S7 §C / S6 rung O2c: every price this agent has actually won at, keyed
-        # by auction so a re-scan of the same AuctionEnded event cannot count a
-        # win twice. S6 keeps a plain list (``SimulatedProvider._winning_bids_micro``)
-        # because its market resolves each auction exactly once; the live agent
-        # reads events from the chain and needs the idempotency. Same multiset,
-        # so ``expected_clearing_price_micro`` sees identical input either way.
+        # Every price this agent has actually won at (the decline rule's input),
+        # keyed by auction so re-reading the same AuctionEnded event cannot count
+        # a win twice.
         self._own_winning_bids_micro: Dict[int, int] = {}
 
         # R1 episodic memory: margin % (over total cost basis) committed on the most recent
@@ -593,28 +580,6 @@ class BlockchainHandler:
         # ============================================================================
         # COMPUTATION TOOLS - perform operation LLM is bad at
         # ============================================================================
-
-        def _get_cycle_auction_context(auction_id: int) -> Dict[str, Any]:
-            auction_key = str(int(auction_id))
-            auctions = (handler._tool_audit_context or {}).get("auctions") or {}
-            auction_context = auctions.get(auction_key)
-            if auction_context is None:
-                raise ValueError(
-                    f"auction_id {auction_id} is not present in the current reasoning-cycle snapshot"
-                )
-            return auction_context
-
-        def _get_cycle_agent_reputation() -> float:
-            rating = (handler._tool_audit_context or {}).get("agent_reputation")
-            if isinstance(rating, (int, float)):
-                return rating
-            return handler.initial_reputation_default
-
-        def _get_cycle_micro_value(field_name: str) -> int:
-            value = (handler._tool_audit_context or {}).get(field_name)
-            if isinstance(value, int):
-                return value
-            raise ValueError(f"{field_name} is not available in the current reasoning-cycle snapshot")
 
         # ============================================================================
         # ACTUATION TOOLS - perform actions that affect the world (e.g., placing bids)
@@ -1210,46 +1175,6 @@ What you do not yet know, and what you could try next to find out."""
         }
         logger.info(f"TOOL_AUDIT {json.dumps(event, default=str)}")
     
-    def _get_default_system_prompt(self, auctions_context: str) -> str:
-        """
-        Generate default system prompt for the ReAct agent.
-        
-        This is used as fallback when no custom system_prompt is provided.
-        In experiments, custom prompts should be injected via config.
-        
-        Args:
-            auctions_context: JSON string of eligible auctions
-            
-        Returns:
-            Default system prompt string
-        """
-        # Dynamically generate tool descriptions based on enabled tools
-        tool_descriptions = {
-            "place_bid": "place_bid(auction_id, bid_amount): Seal your bid commitment on-chain. ONE chance per auction ever — cannot be changed or cancelled. Hidden until automatic reveal; no immediate win/loss feedback.",
-        }
-
-        enabled_tool_descs = [f"- {tool_descriptions[name]}" for name in self.enabled_tools if name in tool_descriptions]
-        tools_section = "\n".join(enabled_tool_descs)
-
-        return f"""You are a bidding agent (ID: {self.agent_id}) for a decentralized AI service marketplace.
-
-Available tools:
-{tools_section}
-
-BIDDING GUIDELINES:
-1. Your estimated execution cost is provided in the auction context; profit = bid − cost.
-2. Service requirements are already embedded in auction details.
-3. Bids are sealed (commit-reveal): place_bid only commits a hash now; reveal and any win/loss determination happen automatically later, outside your control.
-4. This contract ranks revealed bids by weighted score where HIGHER score wins (lower bids improve score via the bid component, reputation also improves score).
-5. Consider time remaining in the commit phase - it is your only window to submit a bid for this auction.
-6. You can commit to multiple auctions if profitable; if none are profitable, don't bid. You can commit to a given auction_id only once, ever.
-7. If you end a cycle without placing a bid, explain the blocker clearly. The runtime will handle the separate continuation decision.
-
-Current eligible auctions:
-{auctions_context}
-
-Analyze these auctions and decide which to bid on."""
-    
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph workflow for blockchain operations."""
         workflow = StateGraph(AgentState)
@@ -1429,9 +1354,8 @@ Analyze these auctions and decide which to bid on."""
     def _bid_jitter_seconds(self, auctions: List[Dict[str, Any]]) -> float:
         """Pre-reasoning delay, capped to a fraction of the shortest commit window.
 
-        On the long phases this repo used to run (60-80s) the cap is the usual
-        3s. On S7's shortened phases it shrinks with the window, so the
-        desynchronisation stays useful without consuming the time the bid needs.
+        On long phases the cap is 3 s; on short ones it shrinks with the window, so
+        the desynchronisation does not consume the time the bid needs.
         """
         cap = self._BID_JITTER_MAX_SECONDS
         windows = [int(a.get("duration") or 0) for a in auctions if a.get("duration")]
@@ -1443,7 +1367,7 @@ Analyze these auctions and decide which to bid on."""
         """Pre-reveal delay, capped to a fraction of the shortest reveal window.
 
         Mirrors :meth:`_bid_jitter_seconds`. The cap matters more here: the
-        reveal window is short (6s in S7) and a commitment not revealed inside it
+        reveal window is short (6 s in the experiments) and a commitment not revealed inside it
         is dropped, so the delay must stay a small fraction of it.
 
         Drawn from :attr:`_reveal_rng` rather than ``self._rng`` so that adding
@@ -1477,8 +1401,8 @@ Analyze these auctions and decide which to bid on."""
         real chain the recomputed value always wins, because time only moves
         forward and the captured value predates the jitter sleep — which is the
         staleness this exists to fix. Taking the minimum rather than replacing
-        outright means a caller that supplies a deliberately short window (the
-        equivalence harness does) still gets the window it asked for: for a
+        outright means a caller that supplies a deliberately short window still
+        gets the window it asked for: for a
         deadline gate, the safe reading of two numbers is the smaller one.
         """
         captured = int(auction.get("time_remaining", 0) or 0)
@@ -1600,13 +1524,11 @@ Analyze these auctions and decide which to bid on."""
     async def _check_commit_landed_in_time(
         self, auction_id: int, receipt: Dict[str, Any], commit_deadline: Optional[int]
     ) -> None:
-        """Record whether this commit was mined before its phase closed (gate G-E).
+        """Record whether this commit was mined before its phase closed.
 
-        §A.6.5 shortens the phases and requires them "verified timeout-free". A
-        commit that lands late does not raise — it is simply a bid that never
-        counted — so without counting them a run with shortened phases looks
-        like a market where nobody wanted to bid. This is the measurement that
-        distinguishes the two.
+        A commit that lands late does not raise; it is simply a bid that never
+        counted. Counting them tells a too-short phase from a market where nobody
+        wanted to bid.
         """
         if not commit_deadline:
             return
@@ -1618,7 +1540,7 @@ Analyze these auctions and decide which to bid on."""
                 self.late_commits += 1
                 logger.warning(
                     "⏰ LATE COMMIT: auction %s commit mined %ss after the phase closed "
-                    "(gate G-E; %d late so far). Phase durations are too short for this "
+                    "(%d late so far). Phase durations are too short for this "
                     "chain, or bid_freshness_min_seconds is too low.",
                     auction_id, mined_at - end_time, self.late_commits,
                 )
@@ -1756,23 +1678,19 @@ Analyze these auctions and decide which to bid on."""
                 self._commitment_store.mark_revealed(auction_id)
                 continue
 
-            # S7 §A.6.5: the reveal window is short, and a reveal that lands
-            # after it closes is worse than one never attempted — the bid is
-            # already committed and the escrow already locked, so a late reveal
-            # forfeits the auction *and* pays gas for the privilege. Skip when
-            # there is not enough of the window left to be mined in it.
+            # A reveal that lands after the window closes forfeits the auction and
+            # still pays gas, so skip when too little of the window is left.
             reveal_remaining = await self._reveal_seconds_remaining(auction_id)
             if reveal_remaining is not None and reveal_remaining <= self._bid_freshness_min_seconds:
-                # Count the *commitment*, not the poll. The loop revisits a
-                # closing window every cycle, so incrementing per poll reported
-                # 73 for 24 actually-forfeited commitments in an earlier run.
+                # Count the commitment, not the poll: the loop revisits a closing
+                # window every cycle.
                 if auction_id not in self._forfeited_commitments:
                     self._forfeited_commitments.add(auction_id)
                     self.missed_reveals += 1
                 logger.warning(
                     "⏰ Skipping reveal for auction %s: only %ss of the reveal window left "
                     "(gate %.1fs). The commitment is forfeit; reveal_duration is too short "
-                    "for this poll interval (gate G-E).",
+                    "for this poll interval.",
                     auction_id, reveal_remaining, self._bid_freshness_min_seconds,
                 )
                 continue
@@ -1810,10 +1728,8 @@ Analyze these auctions and decide which to bid on."""
         )
 
     # ------------------------------------------------------------------
-    # Adapters onto the pure policies in policies.py (S1 §1). These translate
-    # the agent's state dict / config into the dataclasses the policies take;
-    # the pricing arithmetic itself lives in policies.py so the offline
-    # simulator runs the identical code.
+    # Adapters onto the pure policies in policies.py. These translate the
+    # agent's state dict and config into the dataclasses the policies take.
     # ------------------------------------------------------------------
 
     def _observed_execution_cost_usd(self, state: AgentState) -> float:
@@ -1840,12 +1756,7 @@ Analyze these auctions and decide which to bid on."""
             max_margin=max_margin,
             initial_margin_mode=getattr(self.config, "heuristic_initial_margin_mode", "max"),
             initial_reputation_default=self.initial_reputation_default,
-            quality_prior_by_tier=getattr(self.config, "initial_quality_rating_by_effort", {}) or {},
-            # S7 §C = S6 rung O2c. Every arm in a cell gets the identical rule,
-            # judged against the prices it has itself won at, so the factor
-            # measures *declining* and not who happens to be able to decline.
-            # `decline_price_quantile` is left at PolicyParams' pinned 1.0 (O2c);
-            # it is not a config knob.
+            # The decline rule, judged against the prices this agent has won at.
             action_space=str(getattr(self.config, "action_space", "price_only") or "price_only"),
         )
 
@@ -1880,9 +1791,8 @@ Analyze these auctions and decide which to bid on."""
             except (TypeError, ValueError):
                 tier_cost_micros[tier] = int(round(observed_cost_usd * 1e6))
 
-        # S7 §B.2/§B.3: the estimator supplies the shape, history the level.
-        # `multipliers` is None for H, so its economics are byte-identical to
-        # what they were before any estimator existed.
+        # The estimator supplies the shape, history the level. `multipliers` is
+        # None for Adaptive, whose economics are then the history beliefs alone.
         multipliers = self._task_cost_multipliers(state, tier_cost_micros)
         if multipliers:
             tier_cost_micros = {
@@ -1906,17 +1816,15 @@ Analyze these auctions and decide which to bid on."""
             # The win signal every outcome-driven controller uses: one entry per
             # completed delivery observed so far.
             wins=len(state.get("past_execution_costs") or []),
-            # S7 §C: the only extra input O2c's decline rule needs. Insertion
-            # order is win order, which is what S6's list preserves.
+            # The decline rule's input; insertion order is win order.
             own_winning_bids_micro=tuple(self._own_winning_bids_micro.values()),
         )
 
     async def _prepare_task_multipliers(self, state: AgentState, auction: Dict[str, Any]) -> None:
         """Run the configured estimator for this auction, before the policy decides.
 
-        Both arms land here so the economics adapter stays synchronous and pure
-        (the simulator builds it with no I/O). Arm R computes in microseconds;
-        arm X awaits an LLM call, which is why this is the async site.
+        Every estimator runs here, so the economics adapter stays synchronous and
+        pure; LLM-Estimate awaits an LLM call, which is why this is the async site.
         """
         state.pop("_task_cost_multipliers", None)
         estimator = getattr(self, "_cost_estimator", None)
@@ -1963,16 +1871,10 @@ Analyze these auctions and decide which to bid on."""
             )
             multipliers[tier] = multiplier
 
-            # §B.3: the estimator's tokens are charged to the agent, so the
-            # hybrid bids off a *higher* basis and has to earn the call back
-            # inside the mechanism. `add_llm_cost` routes to the reasoning
-            # bucket while no service is executing, and that feeds
-            # `_get_total_non_execution_costs()` — the overhead the controller
-            # already prices in. No post-hoc accounting.
-            #
-            # A cached call is charged the same as a live one: A.4 stores the
-            # usage block precisely so a replayed estimate does not become a
-            # free estimate.
+            # The estimator's tokens are charged to the agent: `add_llm_cost` routes
+            # them to the reasoning bucket, which feeds the per-participation
+            # overhead the controller prices in. A cached call is charged the same
+            # as a live one, from its recorded usage.
             call_cost = float(diagnostics.get("cost_usd") or 0.0)
             if call_cost > 0:
                 self.cost_tracker.add_llm_cost(
@@ -2013,15 +1915,11 @@ Analyze these auctions and decide which to bid on."""
     def _task_cost_multipliers(
         self, state: AgentState, tier_cost_micros: Dict[str, int]
     ) -> Optional[Dict[str, float]]:
-        """Per-tier multipliers from the configured estimator, or None for H.
+        """Per-tier multipliers from the configured estimator, or None for Adaptive.
 
-        Returns None — not a dict of 1.0s — when no estimator is configured, so
-        that H's `AgentEconomics` is exactly what it was before arm R existed.
+        A pure read of what `_prepare_task_multipliers` already computed, so the
+        economics adapter stays free of I/O.
         """
-        # A pure read of what `_prepare_task_multipliers` already computed. The
-        # economics adapter must stay free of I/O: the simulator's equivalence
-        # test builds a handler with `__new__` and no client at all, and arm X's
-        # estimator is a network call that belongs on the async path.
         return state.get("_task_cost_multipliers")
 
     def _current_requirement_id(self, state: AgentState) -> Optional[str]:
@@ -2059,11 +1957,10 @@ Analyze these auctions and decide which to bid on."""
         return self._estimator_sampler
 
     def get_estimator_metrics(self) -> Dict[str, Any]:
-        """What this agent's estimator did, for the run record (S7 §A.4/§B.3).
+        """What this agent's estimator did, for the run record.
 
-        The live/replayed split is the part that matters: the paper claims the
-        calls were real, and a run served from cache must be distinguishable
-        from a live one *in its own record*, not inferable from wall clock.
+        Includes the split between live and replayed (cached) calls, so a run
+        served from the cache is recognisable from its own record.
         """
         estimator = getattr(self, "_cost_estimator", None)
         if estimator is None:
@@ -2071,12 +1968,7 @@ Analyze these auctions and decide which to bid on."""
 
         metrics: Dict[str, Any] = {"mode": self.cost_estimator_mode}
 
-        # Every arm reports why it fell back to the heuristic, not just the LLM
-        # ones. Coverage is part of a result: an arm that priced 18 of 30
-        # auctions and one that priced all 30 are different findings even at the
-        # same sigma, and "R-D was cold for 12 auctions" was previously
-        # recoverable only by scraping the agent log — which an analysis reading
-        # run records would silently report as zero.
+        # Every estimator reports why it fell back to the heuristic, by reason.
         metrics["degraded"] = dict(getattr(estimator, "degraded", {}) or {})
         metrics["outcomes_len"] = len(getattr(estimator, "outcomes", []) or [])
         if isinstance(estimator, cost_estimators.DecomposedCostEstimator):
@@ -2116,7 +2008,7 @@ Analyze these auctions and decide which to bid on."""
         effort_tier: str,
         realized_cost_usd: float,
     ) -> None:
-        """Add a completed job to arm R's fit history (S7 §B.2).
+        """Add a completed job to the estimator's history.
 
         Called by the orchestrator at completion, so the history only ever
         contains jobs this agent has actually finished.
@@ -2131,7 +2023,7 @@ Analyze these auctions and decide which to bid on."""
             logger.debug(f"Could not load features for completed job {requirement_id}: {e}")
         self._cost_estimator.record_outcome(requirement_id, effort_tier, realized_cost_usd)
         logger.info(
-            "📒 Recorded job outcome for arm R: requirement=%s tier=%s cost=$%.6f (history n=%d)",
+            "📒 Recorded job outcome for the estimator: requirement=%s tier=%s cost=$%.6f (history n=%d)",
             requirement_id, effort_tier, realized_cost_usd, len(self._cost_estimator.outcomes),
         )
 
@@ -2185,7 +2077,7 @@ Analyze these auctions and decide which to bid on."""
             applied += 1
 
         logger.info(
-            "⭐ H3 feedback sync: delta_count=%d, inferred_score=%.3f, applied=%d, fallback=%d",
+            "⭐ Effort-tier feedback sync: delta_count=%d, inferred_score=%.3f, applied=%d, fallback=%d",
             delta_count,
             inferred_score,
             applied,
@@ -2449,16 +2341,15 @@ Analyze these auctions and decide which to bid on."""
                                 )
                             
                             won_auctions.append(auction_info)
-                            # S6's ``observe_win``: the clearing-price belief is
-                            # updated when the auction *resolves*, not when the
-                            # job later completes, because that is when the agent
-                            # learns the price. Index 8 = winningBid, micro-USDC.
+                            # The clearing-price belief is updated when the auction
+                            # resolves, which is when the agent learns the price.
+                            # Index 8 = winningBid, micro-USDC.
                             try:
                                 self._own_winning_bids_micro[auction_id] = int(auction[8])
                             except (TypeError, ValueError):
                                 logger.warning(
                                     f"Unreadable winning bid for auction {auction_id}; "
-                                    f"O2c will not count it"
+                                    f"the decline rule will not count it"
                                 )
                             logger.info(f"🎉 Won auction {auction_id}! Buyer: {auction[1]}, Service CID: {auction[2]}")
                         except Exception as e:
@@ -2485,7 +2376,7 @@ Analyze these auctions and decide which to bid on."""
                 
                 # One block read for the whole scan, not one per auction. The
                 # timestamp is identical for every auction in a single pass, so
-                # asking N times was N-1 wasted round trips (S7 §A.6.5).
+                # asking N times was N-1 wasted round trips.
                 block = await self.client.get_block('latest')
                 current_time = block['timestamp']
 
@@ -2849,7 +2740,7 @@ Analyze these auctions and decide which to bid on."""
         # The state above was gathered *before* the sleep, so its `time_remaining`
         # is already stale by the jitter plus however long state gathering took.
         # Re-reading the chain clock here is what makes the freshness gate below
-        # measure the thing it claims to measure (S7 §A.6.5).
+        # measure the thing it claims to measure.
         decision_time = await self._chain_timestamp()
 
         # Reset bids tracker
@@ -2859,7 +2750,6 @@ Analyze these auctions and decide which to bid on."""
             for auction in new_auctions:
                 auction_id = auction["auction_id"]
                 max_price = auction["max_price"]
-                winning_agent_id = auction.get("winning_agent_id", 0) or 0
                 time_remaining = self._fresh_time_remaining(auction, decision_time)
                 # Mark decided upfront so every exit path (continue, exception) is covered.
                 self._decided_auctions.add(auction_id)
@@ -2878,281 +2768,15 @@ Analyze these auctions and decide which to bid on."""
                 profit_cost_basis = estimated_cost
                 selected_effort_tier = self._resolve_bid_effort_tier(None)
 
-                # H1: cost_plus – sealed-bid rational bidding.
-                # Samples uniformly from [profitable floor, score-competitive ceiling].
-                # The ceiling is the highest bid that still beats a reference competitor
-                # at the platform default reputation bidding at their own cost floor.
-                # This strategy is commit-reveal aware: it never references winning_bid
-                # (which is sealed during the commit phase).
-                if strategy == "cost_plus":
-                    if max_price <= 0:
-                        logger.info(f"⏭️ Skipping auction {auction_id}: invalid max_price={max_price}")
-                        continue
-
-                    min_bid = int(estimated_cost * (1.0 + min_margin))
-                    max_bid = int(estimated_cost * (1.0 + max_margin))
-
-                    rw = max(0.0, min(1.0, _auction_rw(auction) / 100.0))
-                    our_rep = float(
-                        (state.get("agent_reputation") or {}).get("rating", self.initial_reputation_default)
-                    )
-                    ref_rep = float(self.initial_reputation_default)
-
-                    # Score-competitive ceiling: the highest bid b where our score still
-                    # matches or exceeds a reference competitor at default reputation bidding
-                    # at max_price (their last-resort bid). This is the tightest bound a
-                    # rational seller must satisfy; using max_price as the reference bid
-                    # ensures equal-rep providers always have a feasible region.
-                    #
-                    #   score(b) = rw*(our_rep/100) + (1-rw)*(1 - b/max_price)
-                    #   reference score = rw*(ref_rep/100)  [bid at max_price → price term = 0]
-                    #   ceiling: rw*(our_rep/100) + (1-rw)*(1-b/max_price) >= rw*(ref_rep/100)
-                    #   → b <= max_price * (1 - penalty)
-                    #   where penalty = rw*(ref_rep - our_rep) / (100*(1-rw))   [when our_rep < ref_rep]
-                    if rw >= 1.0:
-                        score_ceiling = max_price if our_rep >= ref_rep else -1
-                    elif our_rep >= ref_rep:
-                        score_ceiling = max_price  # always win at any bid
-                    else:
-                        rep_gap = ref_rep - our_rep
-                        penalty = rw * rep_gap / (100.0 * (1.0 - rw))
-                        score_ceiling = -1 if penalty >= 1.0 else int(max_price * (1.0 - penalty))
-
-                    effective_ceiling = min(score_ceiling, max_bid, max_price)
-
-                    if effective_ceiling < min_bid:
-                        logger.info(
-                            f"⏭️ Skipping auction {auction_id}: no profitable region "
-                            f"(min_bid={min_bid}, score_ceiling={score_ceiling}, max_bid={max_bid})"
-                        )
-                        continue
-
-                    bid_amount = self._rng.randint(min_bid, effective_ceiling)
-                    logger.info(
-                        f"🎯 cost_plus: auction {auction_id} bid={bid_amount} "
-                        f"[{min_bid}, {effective_ceiling}] our_rep={our_rep:.0f} ref_rep={ref_rep:.0f}"
-                    )
-                # H1 - Strategy 2 (feasible_random) — commit-reveal incompatible, kept for reference.
-                elif strategy == "feasible_random":
-                    min_profitable_bid = int(estimated_cost * (1.0 + min_margin))
-
-                    winning_bid = auction.get("winning_bid", 0) or 0
-                    reputation_weight = _auction_rw(auction)
-                    our_reputation = int(
-                        (state.get("agent_reputation") or {}).get(
-                            "rating", self.initial_reputation_default
-                        )
-                    )
-                    winner_reputation = self.initial_reputation_default
-                    if winning_agent_id and winning_agent_id != self.agent_id:
-                        for rep in state.get("competitors_reputation", []):
-                            if int(rep.get("agent_id", 0) or 0) == int(winning_agent_id):
-                                winner_reputation = int(rep.get("rating", self.initial_reputation_default))
-                                break
-                        else:
-                            rep_data = await self._fetch_reputation(int(winning_agent_id))
-                            winner_reputation = int(rep_data.get("rating", self.initial_reputation_default))
-
-                    if winning_bid > 0:
-                        rw = max(0, min(self.WEIGHT_SCALE, reputation_weight))
-                        our_reputation_scaled = our_reputation * (self.SCORE_PRECISION // self.WEIGHT_SCALE)
-                        winner_reputation_scaled = winner_reputation * (self.SCORE_PRECISION // self.WEIGHT_SCALE)
-                        current_bid_component = ((max_price - winning_bid) * self.SCORE_PRECISION) // max_price
-                        current_winner_score = (
-                            rw * winner_reputation_scaled + (self.WEIGHT_SCALE - rw) * current_bid_component
-                        ) // self.WEIGHT_SCALE
-
-                        if rw >= 100:
-                            # Bid component has zero effect when reputation is fully weighted.
-                            max_competitive_bid = max_price if our_reputation > winner_reputation else -1
-                        else:
-                            required_numerator = self.WEIGHT_SCALE * (current_winner_score + 1) - (rw * our_reputation_scaled)
-                            if required_numerator <= 0:
-                                min_required_bid_component = 0
-                            else:
-                                min_required_bid_component = (
-                                    required_numerator + (self.WEIGHT_SCALE - rw) - 1
-                                ) // (self.WEIGHT_SCALE - rw)
-
-                            if min_required_bid_component > self.SCORE_PRECISION:
-                                max_competitive_bid = -1
-                            else:
-                                # Enforce ((max_price - bid) * SCORE_PRECISION // max_price) >= min_required_bid_component
-                                min_delta = (
-                                    min_required_bid_component * max_price + self.SCORE_PRECISION - 1
-                                ) // self.SCORE_PRECISION
-                                max_competitive_bid = max_price - min_delta
-                    else:
-                        max_competitive_bid = max_price
-
-                    # Cap to auction max price
-                    max_competitive_bid = min(max_competitive_bid, max_price)
-
-                    if max_competitive_bid < min_profitable_bid:
-                        logger.info(
-                            f"⏭️ Skipping auction {auction_id}: no profitable competitive region "
-                            f"(min_profitable={min_profitable_bid}, max_competitive={max_competitive_bid})"
-                        )
-                        continue
-
-                    bid_amount = self._rng.randint(min_profitable_bid, max_competitive_bid)
-                # H1 - Strategy 3: time-based concession from competitive ceiling to min profitable bid.
-                elif strategy in {"h1_strategy_3", "h1_concession"}:
-                    if time_remaining <= 0:
-                        logger.info(f"⏭️ Skipping auction {auction_id}: auction closed")
-                        continue
-
-                    prior_total_cost_usd = state.get("estimated_service_cost")
-                    if prior_total_cost_usd is None:
-                        prior_total_cost_usd = self.cost_tracker.get_initial_execution_cost_for_effort(
-                            getattr(self.config, "default_effort_tier", "medium")
-                        )
-                    prior_total_cost_usd = max(0.0, float(prior_total_cost_usd))
-                    estimated_cost = int(round(prior_total_cost_usd * 1e6))
-                    min_profitable_bid = int(estimated_cost * (1.0 + min_margin))
-                    tick_usd = max(0.0, float(self.config.heuristic_bid_tick_usd))
-                    tick_micro = max(1, int(round(tick_usd * 1e6)))
-
-                    competitive_ceiling_raw = auction.get("winning_bid")
-                    if competitive_ceiling_raw is None or int(competitive_ceiling_raw) <= 0:
-                        opening_bid = int(estimated_cost * (1.0 + max_margin))
-                        opening_bid = (opening_bid // tick_micro) * tick_micro
-                        bid_amount = max(min_profitable_bid, opening_bid)
-                        logger.info(
-                            f"📌 Opening concession bid for auction {auction_id}: no current winning bid "
-                            f"(bid_amount={bid_amount}, estimated_cost={estimated_cost})"
-                        )
-                    else:
-                        winning_bid = int(competitive_ceiling_raw)
-                        reputation_weight = _auction_rw(auction)
-                        our_reputation = int(
-                            (state.get("agent_reputation") or {}).get(
-                                "rating", self.initial_reputation_default
-                            )
-                        )
-                        winner_reputation = self.initial_reputation_default
-                        if winning_agent_id and winning_agent_id != self.agent_id:
-                            for rep in state.get("competitors_reputation", []):
-                                if int(rep.get("agent_id", 0) or 0) == int(winning_agent_id):
-                                    winner_reputation = int(rep.get("rating", self.initial_reputation_default))
-                                    break
-                            else:
-                                rep_data = await self._fetch_reputation(int(winning_agent_id))
-                                winner_reputation = int(rep_data.get("rating", self.initial_reputation_default))
-
-                        rw = max(0, min(self.WEIGHT_SCALE, reputation_weight))
-                        our_reputation_scaled = our_reputation * (self.SCORE_PRECISION // self.WEIGHT_SCALE)
-                        winner_reputation_scaled = winner_reputation * (self.SCORE_PRECISION // self.WEIGHT_SCALE)
-                        current_bid_component = ((max_price - winning_bid) * self.SCORE_PRECISION) // max_price
-                        current_winner_score = (
-                            rw * winner_reputation_scaled + (self.WEIGHT_SCALE - rw) * current_bid_component
-                        ) // self.WEIGHT_SCALE
-
-                        if rw >= 100:
-                            competitive_ceiling = max_price if our_reputation > winner_reputation else -1
-                        else:
-                            required_numerator = self.WEIGHT_SCALE * (current_winner_score + 1) - (rw * our_reputation_scaled)
-                            if required_numerator <= 0:
-                                min_required_bid_component = 0
-                            else:
-                                min_required_bid_component = (
-                                    required_numerator + (self.WEIGHT_SCALE - rw) - 1
-                                ) // (self.WEIGHT_SCALE - rw)
-
-                            if min_required_bid_component > self.SCORE_PRECISION:
-                                competitive_ceiling = -1
-                            else:
-                                min_delta = (
-                                    min_required_bid_component * max_price + self.SCORE_PRECISION - 1
-                                ) // self.SCORE_PRECISION
-                                competitive_ceiling = max_price - min_delta
-
-                        competitive_ceiling = min(competitive_ceiling, max_price)
-
-                        if competitive_ceiling < min_profitable_bid:
-                            logger.info(
-                                f"⏭️ Skipping auction {auction_id}: competitive ceiling below min profitable bid "
-                                f"(min_profitable={min_profitable_bid}, competitive_ceiling={competitive_ceiling}, "
-                                f"winning_bid={winning_bid}, our_reputation={our_reputation}, "
-                                f"winner_reputation={winner_reputation}, reputation_weight={rw})"
-                            )
-                            continue
-
-                        auction_start_raw = auction.get("start_time")
-                        auction_end_raw = auction.get("end_time")
-                        if auction_end_raw is None and auction_start_raw is not None:
-                            duration_raw = auction.get("duration")
-                            if duration_raw is not None:
-                                auction_end_raw = int(auction_start_raw) + int(duration_raw)
-
-                        try:
-                            auction_start = int(auction_start_raw)
-                            auction_end = int(auction_end_raw)
-                        except (TypeError, ValueError):
-                            logger.info(
-                                f"⏭️ Skipping auction {auction_id}: invalid auction timing data "
-                                f"(start={auction_start_raw}, end={auction_end_raw})"
-                            )
-                            continue
-
-                        total_window = auction_end - auction_start
-                        if total_window <= 0:
-                            logger.info(
-                                f"⏭️ Skipping auction {auction_id}: invalid auction window "
-                                f"(start={auction_start}, end={auction_end})"
-                            )
-                            continue
-
-                        now_timestamp = auction_end - int(time_remaining)
-                        progress = (now_timestamp - auction_start) / float(total_window)
-                        progress = max(0.0, min(1.0, progress))
-
-                        concession_exponent = max(0.0, float(self.config.heuristic_concession_exponent))
-                        if concession_exponent == 0.0:
-                            position = 0.0
-                        else:
-                            position = 1.0 - (progress ** concession_exponent)
-
-                        target_bid_float = min_profitable_bid + position * (competitive_ceiling - min_profitable_bid)
-                        target_bid = int(target_bid_float)
-                        target_bid = (target_bid // tick_micro) * tick_micro
-                        target_bid = max(min_profitable_bid, min(target_bid, competitive_ceiling))
-
-                        own_current_bid = self._own_current_bid_by_auction.get(int(auction_id))
-                        if own_current_bid is None:
-                            bid_amount = target_bid
-                        else:
-                            if winning_agent_id == self.agent_id:
-                                logger.info(
-                                    f"⏭️ Skipping auction {auction_id}: currently winning with own bid"
-                                )
-                                continue
-
-                            min_rebid_delta_usd = max(0.0, float(self.config.heuristic_min_rebid_delta_usd))
-                            min_rebid_delta = max(1, int(round(min_rebid_delta_usd * 1e6)))
-                            if target_bid > (int(own_current_bid) - min_rebid_delta):
-                                logger.info(
-                                    f"⏭️ Skipping auction {auction_id}: concession step below min rebid delta "
-                                    f"(target_bid={target_bid}, own_current_bid={own_current_bid}, "
-                                    f"min_rebid_delta={min_rebid_delta})"
-                                )
-                                continue
-
-                            bid_amount = target_bid
-                
-                # H2/H3 policy ladder: the pricing arithmetic lives in
-                # policies.py so the live agent and the offline simulator run
-                # identical code (S1 §1). Everything blockchain-facing — the
-                # freshness gate, commit, audit trail — stays here.
-                #   zi_random     : zero-intelligence uniform bidder (β null)
-                #   h2_strategy_1 : overhead-aware cost-plus band
-                #   h2_strategy_2 : win-rate-adaptive cost-plus
-                #   h2_strategy_3 : derivative-follower pricing, fixed effort
-                #   h3_strategy_2 : derivative follower + career-concerns effort gate
-                elif strategy in policies.POLICIES:
-                    # Which auction is being priced — arm R and arm X both need
-                    # the requirement behind it, and `_policy_economics` takes
-                    # only the shared state dict.
+                # The pricing arithmetic lives in policies.py; everything
+                # blockchain-facing (freshness gate, commit, audit trail) stays here.
+                #   zi_random     : Random
+                #   h2_strategy_1 : Random-in-band
+                #   h2_strategy_3 : Adaptive
+                if strategy in policies.POLICIES:
+                    # Which auction is being priced: the estimators need the
+                    # request behind it, and `_policy_economics` takes only the
+                    # shared state dict.
                     state["_estimator_auction"] = auction
 
                     # Arm X's estimator call happens HERE, inside the commit
@@ -3190,103 +2814,10 @@ Analyze these auctions and decide which to bid on."""
                     selected_effort_tier = self._resolve_bid_effort_tier(decision.effort_tier)
                     logger.info(f"📐 {strategy}: auction {auction_id} {decision.reason}")
 
-                # H3 - Strategy 1: effort-adaptive cost-plus, priced off medium-tier cost.
-                # Effort tier (competitive-rank work-shirk) picks what gets delivered; the
-                # bid itself is always priced as if executing at medium, so choosing "high"
-                # doesn't also make the bid uncompetitive.
-                elif strategy == "h3_strategy_1":
-                    if max_price <= 0:
-                        logger.info(f"⏭️ Skipping auction {auction_id}: invalid max_price={max_price}")
-                        continue
-
-                    participation_overhead_usd = max(
-                        0.0,
-                        float(state.get("non_execution_cost_per_participation") or 0.0),
-                    )
-                    participation_cost_micro = int(round(participation_overhead_usd * 1e6))
-
-                    # Effort tier: competitive-rank work-shirk policy
-                    #   strictly highest reputation → coast (low effort)
-                    #   strictly lowest reputation  → invest (high effort)
-                    #   otherwise                   → maintain (medium)
-                    competitor_ratings = [
-                        float(rep.get("rating") or self.initial_reputation_default)
-                        for rep in state.get("competitors_reputation", [])
-                        if int(rep.get("agent_id", 0) or 0) != int(self.agent_id)
-                    ]
-                    our_rep = float(
-                        (state.get("agent_reputation") or {}).get("rating", self.initial_reputation_default)
-                    )
-
-                    if competitor_ratings and our_rep > max(competitor_ratings):
-                        chosen_tier = "low"
-                    elif competitor_ratings and our_rep < min(competitor_ratings):
-                        chosen_tier = "high"
-                    else:
-                        chosen_tier = "medium"
-
-                    # Per-tier execution costs from A3 state; fall back to EMA scalar.
-                    effort_execution_costs = state.get("effort_level_execution_costs") or {}
-
-                    def _h3s1_cost(key: str) -> int:
-                        _raw = effort_execution_costs.get(key, observed_cost_usd)
-                        try:
-                            return int(round(max(0.0, float(_raw)) * 1e6))
-                        except (TypeError, ValueError):
-                            return int(round(observed_cost_usd * 1e6))
-
-                    tier_cost_micro = _h3s1_cost(chosen_tier)
-                    cost_basis      = tier_cost_micro + participation_cost_micro
-
-                    # Bid is always priced off medium-tier cost, regardless of chosen_tier.
-                    # Anchoring to a fixed medium reference keeps the bid uniformly competitive
-                    # regardless of effort choice; the tier decision instead shows up as a real
-                    # profit/loss difference via cost_basis/profit_cost_basis (the true cost of
-                    # what was delivered).
-                    medium_tier_cost_micro = _h3s1_cost("medium")
-                    pricing_cost_basis     = medium_tier_cost_micro + participation_cost_micro
-
-                    # Overhead recovery: the min-margin floor rises proportionally to
-                    # unrecovered overhead, bounded by the margin gap and by
-                    # heuristic_recovery_pressure_max.
-                    unrecovered_usd = max(0.0, float(state.get("unrecovered_overhead_balance") or 0.0))
-                    max_price_usd = max_price / 1e6
-                    margin_gap = max(0.0, max_margin - min_margin)
-                    pressure_max = max(0.0, min(1.0, float(getattr(self.config, 'heuristic_recovery_pressure_max', 1.0))))
-                    recovery_fraction = min(unrecovered_usd / max(max_price_usd, 1e-6), margin_gap * pressure_max)
-                    eff_min_margin = min_margin + recovery_fraction
-
-                    # Bid interval anchored to medium-tier pricing cost - identical
-                    # competitiveness regardless of which tier was actually chosen.
-                    min_bid = int(pricing_cost_basis * (1.0 + eff_min_margin))
-                    max_bid = min(int(pricing_cost_basis * (1.0 + max_margin)), max_price)
-                    effective_ceiling = max_bid
-
-                    if effective_ceiling < min_bid:
-                        logger.info(
-                            f"⏭️ Skipping auction {auction_id}: no profitable region "
-                            f"(min_bid={min_bid}, max_bid={max_bid}, "
-                            f"chosen_tier={chosen_tier}, recovery={recovery_fraction:.4f})"
-                        )
-                        continue
-
-                    bid_amount = self._rng.randint(min_bid, effective_ceiling)
-                    profit_cost_basis = cost_basis
-                    selected_effort_tier = self._resolve_bid_effort_tier(chosen_tier)
-                    logger.info(
-                        f"📐 h3_strategy_1: auction {auction_id} bid={bid_amount} "
-                        f"[{min_bid}, {effective_ceiling}] tier={chosen_tier} "
-                        f"tier_cost={tier_cost_micro} pricing_cost={medium_tier_cost_micro} "
-                        f"overhead={participation_cost_micro} "
-                        f"recovery={recovery_fraction:.4f} our_rep={our_rep:.0f}"
-                    )
-                
                 else:
-                    logger.warning(f"Unknown heuristic strategy '{strategy}', defaulting to cost_plus")
-                    min_bid = int(estimated_cost * (1.0 + min_margin))
-                    max_bid = int(estimated_cost * (1.0 + max_margin))
-                    bid_amount = self._rng.randint(min_bid, min(max_bid, max_price))
-                
+                    logger.error(f"Unknown heuristic strategy '{strategy}'; not bidding")
+                    continue
+
                 # Check if bid is within max_price
                 if bid_amount > max_price:
                     logger.info(

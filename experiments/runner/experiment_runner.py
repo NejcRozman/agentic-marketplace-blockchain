@@ -137,15 +137,15 @@ def build_provenance(
         "git_sha": sha,
         "git_dirty": None if porcelain is None else bool(porcelain),
         # Surfaced out of resolved_config so analysis can group runs by seed
-        # without parsing the whole config (S7 §A.1, §A.2).
+        # without parsing the whole config.
         "run_seed": experiment_section.get("run_seed"),
         "llm_temperature": experiment_section.get("llm_temperature"),
         "llm_sampling_seed": experiment_section.get("llm_sampling_seed"),
-        # Where replayed answers would come from (S7 §A.4). Recorded so a run's
+        # Where replayed answers would come from. Recorded so a run's
         # provenance says which cache it could have been served from; the
         # live/replayed split itself is the estimator's to report per run.
         "llm_cache_dir": str(LIVE_CACHE_DIR),
-        # Run isolation, resolved rather than configured (S7 §A.6): which port
+        # Run isolation, resolved rather than configured: which port
         # and chain this run actually used, and the block its fork started from.
         **(runtime or {}),
         "git_branch": _git_output(["rev-parse", "--abbrev-ref", "HEAD"]),
@@ -170,7 +170,7 @@ class ProcessHandle:
 class ExperimentRunner:
     """Orchestrates execution of simulation experiments."""
     
-    #: Concurrent runs are isolated by index (S7 §A.6). Port and chain id are both
+    #: Concurrent runs are isolated by index. Port and chain id are both
     #: derived from it, so there is one input to get wrong instead of two.
     BASE_RPC_PORT = 8545
     BASE_CHAIN_ID = 8000
@@ -183,9 +183,9 @@ class ExperimentRunner:
         """
         self.config_path = config_path
         self.run_index = int(run_index)
-        # S7 §D: one config serves every seed of its cell. Supplying the seed per
-        # run is also what makes the pairing work — X-vs-H and X-vs-R_guarded at
-        # seed 1007 read the same number and draw the same requirement order.
+        # One config serves every seed of its condition. Supplying the seed per run
+        # is also what makes the pairing work: every condition at seed 1007 draws
+        # the same request order.
         self._run_seed_override = None if run_seed is None else int(run_seed)
         self.config: Dict[str, Any] = {}
         self.processes: List[ProcessHandle] = []
@@ -203,7 +203,7 @@ class ExperimentRunner:
         self.provider_agent_ids: List[int] = []
         self.provider_metadata: List[Dict[str, Any]] = []  # Track provider types and configs
         
-        # Reproducibility (S7 §A.1, §A.2)
+        # Reproducibility
         self.run_seed: Optional[int] = None
         self._contracts_built = False
         self.llm_temperature: Optional[float] = None
@@ -226,17 +226,17 @@ class ExperimentRunner:
 
     @property
     def jobs_dir(self) -> Path:
-        """This run's provider->consumer result directory (S7 §A.6)."""
+        """This run's provider->consumer result directory."""
         return self.log_dir / "jobs"
 
     @property
     def commitments_dir(self) -> Path:
-        """This run's sealed-bid commitment store (S7 §A.6)."""
+        """This run's sealed-bid commitment store."""
         return self.log_dir / "commitments"
 
     @property
     def rpc_port(self) -> int:
-        """This run's Anvil port (S7 §A.6 P2)."""
+        """This run's Anvil port."""
         return self.BASE_RPC_PORT + self.run_index
 
     @property
@@ -255,7 +255,7 @@ class ExperimentRunner:
 
     @property
     def chain_id(self) -> int:
-        """This run's chain id (S7 §A.6 P3).
+        """This run's chain id.
 
         `forge script --broadcast` writes to
         ``contracts/broadcast/<script>/<chainId>/run-latest.json``. Every run
@@ -268,12 +268,12 @@ class ExperimentRunner:
 
     @property
     def fork_block_number(self) -> Optional[int]:
-        """Pinned fork height (S7 §A.6.1, defect D8).
+        """Pinned fork height.
 
         Unpinned, every run starts from Sepolia's current head — different
         balances, block times and gas each time. Pinning makes the starting
         chain state identical across runs *and* lets Anvil serve the fork from
-        cache instead of re-fetching per run (P5).
+        cache instead of re-fetching per run.
         """
         raw = (self.config.get('blockchain') or {}).get('fork_block_number')
         return None if raw is None else int(raw)
@@ -370,12 +370,11 @@ class ExperimentRunner:
         provider_cfg = group_config.get('config', {})
         architecture = provider_behavior.get('architecture', provider_cfg.get('architecture'))
         reasoning_mode = provider_behavior.get('reasoning_mode', provider_cfg.get('reasoning_mode'))
-        # S7 §B.2: which cost estimator this group bids with (none/r_naive/r_guarded).
-        # Per group, not per provider config: X and R_guarded are different groups
-        # inside one market.
+        # Which cost estimator this group bids with: per group, because the
+        # strategies in one market differ in it.
         cost_estimator = provider_behavior.get('cost_estimator', provider_cfg.get('cost_estimator'))
-        # S7 §C: the abstention gate (S6 rung O2c). Per provider config, not per
-        # group — §C requires every arm in a cell to run the identical rule.
+        # The decline rule: per provider config, not per group, so every agent in a
+        # market runs the same rule.
         action_space = provider_cfg.get('action_space')
         heuristic_strategy = provider_behavior.get('heuristic_strategy', provider_cfg.get('heuristic_strategy'))
         heuristic_min_margin = provider_behavior.get('heuristic_min_margin', provider_cfg.get('heuristic_min_margin'))
@@ -414,8 +413,8 @@ class ExperimentRunner:
         blockchain_llm_model = provider_behavior.get('blockchain_llm_model', provider_cfg.get('blockchain_llm_model'))
         service_llm_model = provider_behavior.get('service_llm_model', provider_cfg.get('service_llm_model'))
         initial_service_execution_cost = provider_cfg.get('initial_service_execution_cost')
-        # S7 §A.6.5 / gate G-E: the commit-window freshness gate and how often
-        # the provider polls, both per run.
+        # The commit-window freshness gate and how often the provider polls, both
+        # per run.
         bid_freshness_min_seconds = provider_cfg.get('bid_freshness_min_seconds')
         provider_monitor_interval = provider_cfg.get('provider_monitor_interval')
         initial_service_execution_cost_low = provider_cfg.get('initial_service_execution_cost_low')
@@ -499,7 +498,7 @@ class ExperimentRunner:
         # Extract key configuration
         self.experiment_id = self.config['experiment']['id']
 
-        # S7 §A.1: the run seed. One number per run; every agent derives its own
+        # The run seed. One number per run; every agent derives its own
         # stream from it as `run_seed + agent_id`. Paired arms share it, so the
         # market draw is common-mode and differences out of the comparison.
         if self._run_seed_override is not None:
@@ -511,9 +510,8 @@ class ExperimentRunner:
             run_seed_raw = self.config['experiment'].get('run_seed')
             self.run_seed = None if run_seed_raw is None else int(run_seed_raw)
 
-        # S7 §A.2 (D2). Run-level, not per-provider-group: sampling must be the
-        # same for every agent in a cell or the arms are not comparable. Left
-        # unset, each model uses the block the estimation protocol pinned for it.
+        # LLM sampling, run-level rather than per group, so every agent in a market
+        # samples the same way. Left unset, each model uses its pinned block.
         llm_temperature_raw = self.config['experiment'].get('llm_temperature')
         self.llm_temperature = None if llm_temperature_raw is None else float(llm_temperature_raw)
         llm_sampling_seed_raw = self.config['experiment'].get('llm_sampling_seed')
@@ -581,7 +579,7 @@ class ExperimentRunner:
 
         This used to `pkill anvil` and `pkill -f *_orchestrator.py` — pattern
         kills that cannot tell this run's processes from a neighbour's, so
-        starting run N destroyed every other run in flight (S7 §A.6 P1). Worse,
+        starting run N destroyed every other run in flight. Worse,
         it failed silently: the run issuing the kill was fine, and the runs it
         killed showed up as missing rows rather than an error.
 
@@ -603,7 +601,7 @@ class ExperimentRunner:
 
     @property
     def state_snapshot(self) -> Optional[Path]:
-        """Local chain snapshot to start from instead of forking (S7 §A.6 P5).
+        """Local chain snapshot to start from instead of forking.
 
         A snapshot is a full dump of a chain that was forked *once*, and is
         offline thereafter. It removes Infura from the run path entirely rather
@@ -616,7 +614,6 @@ class ExperimentRunner:
         raw = (self.config.get('blockchain') or {}).get('state_snapshot')
         if not raw:
             return None
-        path = Path(raw)
         return paths.resolve(raw)
 
     def _state_snapshot_sha256(self) -> Optional[str]:
@@ -631,7 +628,7 @@ class ExperimentRunner:
         cmd = [
             "anvil",
             "--host", "0.0.0.0",
-            # S7 §A.6 P2/P3: one port and one chain id per run. Without these
+            # One port and one chain id per run. Without these
             # every run binds 8545 and every run is chain 11155111, so
             # concurrent runs share a blockchain and race on the same forge
             # broadcast record.
@@ -663,9 +660,8 @@ class ExperimentRunner:
 
         cmd += ["--fork-url", f"https://{fork_network}.infura.io/v3/{infura_key}"]
 
-        # D8 (§A.6.1): pin the fork height. Unpinned, each run starts from a
-        # different Sepolia head — a reproducibility defect of the same class as
-        # D1-D7 — and nothing caches, which is also P5's rate-limit problem.
+        # Pin the fork height. Unpinned, each run starts from a different Sepolia
+        # head, which is not reproducible, and nothing is cached.
         # Foundry caches fork state per block under ~/.foundry/cache/rpc/, so a
         # pinned height is what lets the second and later runs read from disk.
         if self.fork_block_number is not None:
@@ -679,7 +675,7 @@ class ExperimentRunner:
         else:
             logger.warning(
                 "Fork block is NOT pinned; this run starts from Sepolia's current "
-                "head and is not reproducible (D8). Set blockchain.fork_block_number "
+                "head and is not reproducible. Set blockchain.fork_block_number "
                 "or, better, blockchain.state_snapshot."
             )
 
@@ -824,7 +820,7 @@ class ExperimentRunner:
         return result.stdout
     
     def build_contracts_once(self) -> None:
-        """Compile the contracts, at most one process at a time (S7 §A.6 P4).
+        """Compile the contracts, at most one process at a time.
 
         `contracts/cache/` and `contracts/out/` are shared state. Eight runners
         invoking `forge script` at once compile into the same directories and
@@ -891,7 +887,7 @@ class ExperimentRunner:
         self.payment_token_address = usdc_match.group(1)
         self.reverse_auction_address = auction_match.group(1)
         
-        logger.info(f"✓ Contracts deployed:")
+        logger.info("✓ Contracts deployed:")
         logger.info(f"  Mock USDC: {self.payment_token_address}")
         logger.info(f"  ReverseAuction: {self.reverse_auction_address}")
     
@@ -930,7 +926,7 @@ class ExperimentRunner:
         # Run FundConsumer script
         self.run_forge_script("FundConsumer.s.sol", env_vars)
         
-        logger.info(f"✓ Consumer account funded")
+        logger.info("✓ Consumer account funded")
         logger.info(f"  ETH: {eth_amount / 1e18} ETH")
         logger.info(f"  USDC: {usdc_amount / 1e6} USDC")
     
@@ -1181,9 +1177,8 @@ class ExperimentRunner:
         # Setup environment variables
         env = os.environ.copy()
 
-        # S7 §A.1: every agent — consumer and provider alike — seeds its own RNG
-        # from this. Unset only when the config omits `experiment.run_seed`, which
-        # no S7 config may do.
+        # Every agent, consumer and provider alike, seeds its own RNG from this.
+        # Unset only when the config omits `experiment.run_seed`.
         if self.run_seed is not None:
             env["RUN_SEED"] = str(self.run_seed)
         if self.llm_temperature is not None:
@@ -1312,7 +1307,7 @@ class ExperimentRunner:
             # could never be revealed).
             "AGENT_COMMITMENTS_DIR": str(self.commitments_dir),
             "BLOCKCHAIN_RPC_URL": self.rpc_url,
-            # S7 §A.6 P3. Agents sign with `config.chain_id`
+            # Agents sign with `config.chain_id`
             # (blockchain_client.py:210), which otherwise comes from
             # `agents/.env`, where it is hardcoded to Sepolia's 11155111. Give
             # each run its own chain id without exporting this and every
@@ -1435,8 +1430,6 @@ class ExperimentRunner:
         )
         
         # Spawn providers using metadata from registration
-        provider_config = self.config['agents']['providers']
-        
         for provider_meta in self.provider_metadata:
             agent_id = provider_meta['agent_id']
             pk = provider_meta['private_key']
@@ -1461,9 +1454,8 @@ class ExperimentRunner:
             if cost_estimator is not None:
                 provider_args['cost_estimator'] = cost_estimator
 
-            # S7 §C: the abstention gate, per provider *config* rather than per
-            # group, because §C requires every arm in a cell to run the identical
-            # rule.
+            # The decline rule, per provider config rather than per group, so every
+            # agent in a market runs the same rule.
             if provider_cfg.get('action_space') is not None:
                 provider_args['action_space'] = provider_cfg['action_space']
             heuristic_min_margin = provider_behavior.get('heuristic_min_margin', provider_cfg.get('heuristic_min_margin'))
@@ -1481,7 +1473,6 @@ class ExperimentRunner:
             heuristic_min_rebid_delta_usd = provider_behavior.get(
                 'heuristic_min_rebid_delta_usd', provider_cfg.get('heuristic_min_rebid_delta_usd')
             )
-            check_interval_jitter_seed = provider_cfg.get('check_interval_jitter_seed')
             llm_margin_bounds_enabled = provider_behavior.get(
                 'llm_margin_bounds_enabled', provider_cfg.get('llm_margin_bounds_enabled')
             )
@@ -1545,7 +1536,7 @@ class ExperimentRunner:
                 provider_args['embedding_input_price_per_1k'] = embedding_input_price_per_1k
 
             # Provider economic simulation parameters
-            # S7 §A.6.5 / gate G-E: the commit-window freshness gate, per run.
+            # The commit-window freshness gate, per run.
             bid_freshness_min_seconds = provider_cfg.get('bid_freshness_min_seconds')
             if bid_freshness_min_seconds is not None:
                 provider_args['bid_freshness_min_seconds'] = bid_freshness_min_seconds
@@ -1939,7 +1930,7 @@ class ExperimentRunner:
                 logger.info(f"      Winner: {auction_data['winner_id']}")
                 logger.info(f"      Quality rating: {auction_data['quality_rating']}/100")
             
-            logger.info(f"\n📈 Summary:")
+            logger.info("\n📈 Summary:")
             logger.info(f"   Completed auctions: {summary['completed_auctions']}/{summary['total_auctions']}")
             logger.info(f"   Total bids attempted: {summary['total_bids_attempted']}")
             logger.info(f"   Total bids on-chain: {summary['total_bids_on_chain']}")
@@ -2163,12 +2154,12 @@ async def main():
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument(
         "--run-seed", type=int, default=None,
-        help="Seed for this run, overriding the config (S7 §D). One config serves "
+        help="Seed for this run, overriding the config. One config serves "
              "every seed of its cell; paired arms at the same seed see the same market.",
     )
     parser.add_argument(
         "--run-index", type=int, default=0,
-        help="Isolation index for concurrent runs (S7 §A.6): port 8545+i, chain id 8000+i. "
+        help="Isolation index for concurrent runs: port 8545+i, chain id 8000+i. "
              "Index 0 keeps the historical port and the config's rpc_url.",
     )
 

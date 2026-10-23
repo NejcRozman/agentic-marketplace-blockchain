@@ -41,12 +41,9 @@ CONFIDENCE_BOUNDS = (0.0, 1.0)
 
 @dataclass(frozen=True)
 class PinnedModel:
-    """One of the two models S2 freezes for S5 (§5).
+    """A model of the experiments and the sampling block sent with it.
 
-    ``sampling`` is sent verbatim. It is a dict rather than named fields
-    because the two pinned models are from a family whose accepted parameters
-    have changed across versions, and recording what was *sent* is the thing
-    that makes the run reproducible.
+    ``sampling`` is sent verbatim and is part of the cache key.
     """
 
     key: str
@@ -255,19 +252,11 @@ def live_cache_key(
     auction_id: Optional[int] = None,
     system_message: str = "",
 ) -> str:
-    """Cache identity for one *live* call (S7 §A.4).
+    """Cache identity for one call, built from what determined the answer.
 
-    The probe's key is built from grid coordinates (arm, probe_id, repeat),
-    which a market auction does not have. This one is built from what actually
-    determined the answer: the exact prompt, the model, the sampling block, and
-    the identity of the agent and run that asked.
-
-    ``run_seed`` and ``agent_id`` are in the key deliberately, and they are what
-    stop this from being a spend-reduction tool. Two seeds never share an entry,
-    and the two hybrid agents in a 2 v 2 never share one either — they are meant
-    to be independent economic actors, and one cached answer serving both would
-    make them one agent with two names. The budget already assumes every call is
-    paid once; what the cache buys is exact re-analysis, restart, and audit.
+    The exact prompt, the model, the sampling block, and the run seed and agent that
+    asked. Seed and agent are in the key so that two runs or two agents never share
+    an answer; the cache is for exact replay, not for saving calls.
     """
     parts = [
         "live",
@@ -327,16 +316,11 @@ class OpenRouterProbe:
         parser: Any,
         session: Optional[aiohttp.ClientSession] = None,
     ) -> CallResult:
-        """One call from a live agent, cached by S7 §A.4's key.
+        """One estimator call, served from the cache when the same call was made before.
 
-        Everything else — payload shape, JSON-schema enforcement, the retry
-        ladder, and the B0 fallback on give-up — is the probe's, unchanged. That
-        is the point: an estimator that differs from S5 in its transport or its
-        failure rule is not the estimator whose sigma S5 measured.
-
-        The returned ``CallResult`` carries ``prompt_tokens``, ``completion_tokens``
-        and ``cost_usd`` whether it came from the network or from disk, so the
-        caller charges a replayed call exactly what the live one cost (§B.3).
+        The returned ``CallResult`` carries ``prompt_tokens``, ``completion_tokens`` and
+        ``cost_usd`` whether it came from the network or from disk, so the caller
+        charges a replayed call exactly what the live one cost.
         """
         key = live_cache_key(
             model,
@@ -498,13 +482,11 @@ class OpenRouterProbe:
             return None
 
     def _write_cache(self, key: str, record: Mapping[str, Any]) -> None:
-        """Write atomically (S7 §A.6 P6).
+        """Write atomically.
 
-        Under 8-way parallelism two processes can write the same key at once; a
-        bare ``write_text`` lets them interleave and leave a truncated entry.
-        Writing to a unique temp file in the same directory and then
-        ``os.replace`` makes the swap atomic on POSIX — a reader sees either the
-        old entry or the new one, never half of either.
+        Parallel runs can write the same key at once; writing to a unique temporary
+        file and then ``os.replace`` means a reader sees either the old entry or the
+        new one, never half of either.
         """
         path = self._cache_path(key)
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")

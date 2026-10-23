@@ -75,23 +75,14 @@ def fit_linear(
     *,
     ridge_lambda: float = 0.0,
 ) -> LinearModel:
-    """OLS with zero-variance features screened out first.
+    """Least squares with zero-variance features screened out first.
 
-    ``ridge_lambda`` adds a **statistical** shrinkage penalty, distinct from
-    :data:`RIDGE_EPSILON`, which only exists to keep the Gram matrix invertible.
-    It is applied to **standardised** columns and the coefficients are unscaled
-    afterwards, because the raw columns are on wildly different scales
-    (``total_prompt_chars`` is in the thousands, ``prompt_count`` is single
-    digits) and an unstandardised penalty would shrink the small-scale
-    coefficients almost exclusively. Zero — the default — leaves every existing
-    caller's arithmetic byte-for-byte unchanged (S7 §B.2).
-
-    The screen is not cosmetic. On dataset v1 ``source_pdf_count`` is 5 and
-    ``prompt_count`` is 10 for every requirement, so two of B1's three columns
-    are constant. Left in, they are collinear with the intercept and the fitted
-    coefficients are arbitrary — a reader would see a "coefficient on PDF count"
-    that means nothing. Screened out and reported in ``dropped``, the situation
-    is legible: B1 on v1 *is* a univariate regression on prompt length.
+    ``ridge_lambda`` adds a shrinkage penalty, distinct from :data:`RIDGE_EPSILON`,
+    which only keeps the Gram matrix invertible. It is applied to standardised
+    columns and the coefficients are unscaled afterwards, because the raw columns
+    are on very different scales (``total_prompt_chars`` in the thousands,
+    ``prompt_count`` in single digits). Screened-out features are reported in
+    ``dropped``.
     """
     usable: List[str] = []
     dropped: List[str] = []
@@ -152,34 +143,24 @@ def fit_linear(
 
 @dataclass(frozen=True)
 class RegressionEstimate:
-    """Arm R's prediction, with the diagnostics that say whether to believe it."""
+    """Regression's prediction, with the diagnostics that say whether to believe it."""
 
     predicted_cost: float
     multiplier: float
     n_observations: int
     usable_features: Tuple[str, ...]
     dropped_features: Tuple[str, ...]
-    #: True when `R_guarded` declined to fit and returned the tier level. Not an
-    #: error — the arm behaving as designed at small n (S7 §B.2).
+    #: True when the guard withheld the fit and returned the tier level.
     guard_withheld: bool = False
 
     @property
     def degenerate(self) -> bool:
-        """True when the fit had no usable feature, so R collapsed to B0.
-
-        Not a failure — it is P2's prediction made concrete. With k = 3 an agent
-        cannot fit three coefficients on three points in any meaningful sense,
-        and the honest baseline in the cold-start regime *is* the tier mean.
-        """
+        """True when the fit had no usable feature, so the estimate is the tier level."""
         return not self.usable_features
 
     @property
     def exactly_determined(self) -> bool:
-        """As many usable features as observations — interpolates, generalises poorly.
-
-        Distinct from :attr:`degenerate`: the fit succeeds and returns a
-        confident number built on no residual degrees of freedom.
-        """
+        """As many usable features as observations: the fit interpolates."""
         return bool(self.usable_features) and len(self.usable_features) >= self.n_observations
 
 
@@ -191,34 +172,16 @@ def fit_cost_multiplier(
     feature_names: Sequence[str] = SURFACE_FEATURES,
     guard: bool = False,
 ) -> RegressionEstimate:
-    """Arm **R**'s fit, on features alone. The one implementation of it.
+    """Regression's fit on countable request features.
 
-    ``guard`` selects between S7 §B.2's two arms, which differ *only* here:
+    ``observed`` is ``[(features, realized_cost), ...]`` for the agent's own completed
+    jobs at one tier. The target is ``log(realized / tier level)``, so the result is
+    a multiplier on the tier level.
 
-    * ``guard=False`` — **`R_naive`**. Always fits, however little it has. This
-      is the arm S6 measured at sigma 0.9327 on 3 jobs, worse than guessing, and
-      reproducing that curve is why it still runs.
-    * ``guard=True`` — **`R_guarded`**. Ridge-penalised, and it declines to fit
-      at all below :data:`GUARD_OBSERVATIONS_PER_PARAMETER` observations per
-      parameter, returning the tier level instead. It therefore *is* the pure
-      heuristic at cold start, by construction.
-
-    The second is the honest opponent: if the hybrid only beat `R_naive`, the
-    cold-start result would be an artifact of a strawman nobody would deploy.
-
-    ``observed`` is ``[(features, realized_cost), ...]`` for the agent's own past
-    jobs at one tier. Callers differ only in where those come from: the probe
-    draws them (:func:`regression_estimate`), and the simulator's cold-start arm
-    accumulates them from the jobs it actually won. **Both must fit identically**
-    or "the regression an agent can construct" means two different things in the
-    two places S6 compares.
-
-    Target is ``log(realized / tier level)``, the same as S5's B1, so the
-    multiplier is comparable to the LLM's; and :func:`baselines.fit_linear` is the
-    same, so zero-variance columns are screened rather than producing arbitrary
-    coefficients. With no usable observation the arm *is* the tier mean, which is
-    P2's cold-start prediction rather than a failure — see
-    :attr:`RegressionEstimate.degenerate`.
+    With ``guard=True`` (the experiments' Regression) the fit is ridge-penalised and
+    withheld below :data:`GUARD_OBSERVATIONS_PER_PARAMETER` observations per
+    parameter, returning the tier level instead, so the estimator is the pure
+    heuristic until it has enough data. ``guard=False`` fits whatever it has.
     """
     usable = [(row, cost) for row, cost in observed if cost > 0]
     if not usable or tier_level_cost <= 0:
@@ -257,17 +220,8 @@ def fit_cost_multiplier(
     )
 
     low, high = COST_MULTIPLIER_BOUNDS
-    # Same bounds the LLM's output is held to. An exactly-determined fit
-    # extrapolates hard, and an unbounded R would lose to the LLM on outliers
-    # the LLM is protected from.
-    #
-    # **Clamped in log space, before exponentiating.** Identical arithmetic
-    # wherever ``exp`` is finite, and the only version that survives where it is
-    # not: three near-collinear observations can put ``predict`` in the hundreds,
-    # and ``exp(800)`` raises ``OverflowError`` before any bound can be applied.
-    # Found by S6 §E's cold-start arm, which fits on whatever an agent happened to
-    # win rather than on curated draws — but the defect was always here, and the
-    # offline probe simply never fed it an extreme enough history.
+    # Same bounds as LLM-Estimate's multiplier, applied in log space before
+    # exponentiating, so that a near-collinear fit cannot overflow ``exp``.
     log_multiplier = model.predict(target_features)
     if log_multiplier != log_multiplier:            # NaN from a degenerate solve
         log_multiplier = 0.0

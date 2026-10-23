@@ -380,7 +380,7 @@ The response is clear, concise, and well-structured.
             return False
     
     def _apply_effort_model(self, effort_budget: Dict[str, Any]) -> None:
-        """Swap the execution model for this run when the tier names one (S4 §3c).
+        """Swap the execution model for this run when the tier names one.
 
         Kept off the constructor deliberately: the tier is known per request, not per
         provider, and a provider that sells three tiers runs all three.
@@ -404,10 +404,9 @@ The response is clear, concise, and well-structured.
     def _apply_retrieval_k(self, retrieval_k: int) -> None:
         """Set how many passages each search returns for this execution.
 
-        Effort is an evidence budget, not just a search count: S4 §3 measured that two
-        searches saturate quality at every task depth when each one returns a fixed
-        three passages. Rebuilding the retriever per run lets the tier move both
-        factors, which is what makes the middle tier a real middle.
+        Effort is an evidence budget, not just a search count: with a fixed number of
+        passages per search, two searches saturate quality at every task depth.
+        Rebuilding the retriever per run lets the tier move both factors.
         """
         if not self.vectorstore:
             return
@@ -713,11 +712,8 @@ The response is clear, concise, and well-structured.
             }
 
         ``retrieval_rounds_used`` is how many times the agent went back to the
-        documents for *this one prompt* — the effort channel dataset v3 exists to
-        record. The graph has always tracked it (each prompt gets a fresh state
-        with the counter at 0) and it was logged, but only ``{prompt, response}``
-        was ever persisted, so dataset v2's rounds are unrecoverable. It is
-        ``None`` when the value could not be observed rather than 0, because a
+        documents for *this one prompt* (each prompt gets a fresh state with the
+        counter at 0). It is ``None`` when the value could not be observed rather than 0, because a
         silent 0 is indistinguishable from "no digging" and would poison any
         regression fitted on it; ``usage_measured`` says which case applies.
         """

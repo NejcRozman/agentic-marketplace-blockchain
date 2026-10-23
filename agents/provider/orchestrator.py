@@ -21,7 +21,6 @@ import copy
 import logging
 import argparse
 import json
-import sys
 import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -43,14 +42,14 @@ IPFS_RETRY_SECONDS = 180
 
 
 class SampledReplayUnavailable(RuntimeError):
-    """Dataset v2 has no recorded run for this (requirement, tier).
+    """The dataset has no recorded run for this (requirement, tier).
 
     Distinct from a service *execution* failure on purpose. A live executor that
     fails is a market event — the provider tried, delivered nothing, and should
     be judged for it. A missing replay is not a market event: it means the run is
     reading a dataset that cannot answer, and continuing would deliver a
     fabricated result, collect the escrow, and record zero execution cost. That
-    is invented profit in the primary DV (S7 §F.1), so it must stop the job
+    is invented profit in the net balance, so it must stop the job
     rather than "unblock the workflow".
     """
 
@@ -111,8 +110,8 @@ class Orchestrator:
     - Handles retries and errors
     """
 
-    #: Default polling interval for the main loop (seconds). S7 overrides it via
-    #: `provider_monitor_interval` (§A.6.5): at 5s a provider cannot reliably
+    #: Default polling interval for the main loop (seconds). The experiments override
+    #: it via `provider_monitor_interval`: at 5s a provider cannot reliably
     #: catch a 5s reveal window, which is how bids get committed and then
     #: forfeited. On a local chain mining every 1s, polling at 1s is within one
     #: block of a WebSocket event subscription — the same reaction time for none
@@ -179,8 +178,8 @@ class Orchestrator:
             self.config, "provider_monitor_interval", self._DEFAULT_MONITOR_INTERVAL
         ))
         self.last_monitor_error: Optional[str] = None
-        #: Jobs abandoned because dataset v2 had no run to replay. Must be zero
-        #: in any run whose numbers are used (S7 §F.1).
+        #: Jobs abandoned because the dataset had no run to replay. The campaign
+        #: check rejects a run with any.
         self.replay_failures = 0
         self._sampled_dataset_sampler: Optional[DatasetSampler] = None
         
@@ -205,7 +204,7 @@ class Orchestrator:
         run_selection_mode = getattr(self.config, "sampled_dataset_run_selection_mode", "round_robin")
         base_seed = getattr(self.config, "sampled_dataset_selection_seed", None)
         if base_seed is None:
-            # S7 §A.3: fall back to the run seed so one number drives the run.
+            # Fall back to the run seed so one number drives the run.
             base_seed = getattr(self.config, "run_seed", None)
         resolved_seed = None
         if base_seed is not None:
@@ -486,7 +485,6 @@ class Orchestrator:
 
             # Execute service
             # Only pass effort_tier if two_way coupling is enabled
-            service_requirements = job.service_requirements or {}
             kwargs = {
                 "pdf_directory": str(job.pdf_directory),
                 "prompts": job.prompts,
@@ -559,12 +557,9 @@ class Orchestrator:
                 )
             job.llm_cost = self.cost_tracker.end_service_execution(effort_tier=job.effort_tier)
 
-        # S7 §B.2: arm R regresses on the agent's *own* completed jobs, so it
-        # needs (requirement, tier, realized cost). The cost tracker keeps costs
-        # per tier but not which requirement produced them. Recorded here, at the
-        # moment the job actually completes, so the fit history can never contain
-        # a job the agent has not finished — an agent may only regress on what it
-        # already knows.
+        # The estimators learn from the agent's own completed jobs, so they need
+        # (request, tier, realised cost). Recorded here, when the job completes,
+        # so their history never contains a job the agent has not finished.
         self.blockchain_handler.record_job_outcome(
             requirement_id=requirement_id,
             effort_tier=resolved_tier,
@@ -585,17 +580,9 @@ class Orchestrator:
             "executor_duration_seconds": float(run_record.get("executor_duration_seconds", 0.0) or 0.0),
             "evaluator_duration_seconds": float(run_record.get("evaluator_duration_seconds", 0.0) or 0.0),
             "execution_cost_usd": execution_cost,
-            # Dataset v3 ground truth: how much digging the recorded execution
-            # actually did, per prompt. Carried here so an analysis can score the
-            # estimator's predicted depth against what happened on the very jobs
-            # it bid on.
-            #
-            # ⚠️ The depth of the job being *priced* is never readable by any
-            # estimator — arm X predicts these numbers from the prompt text
-            # before bidding, and observing them would be reading the answer
-            # key. Absent on v2 records, which is why the default is None/False rather
-            # than 0: v2's rounds were never captured and must not look like zero
-            # digging.
+            # How many retrieval rounds the recorded execution took, per prompt, so
+            # an analysis can compare LLM-Estimate's predicted depths with them.
+            # No estimator ever reads this for the job it is pricing.
             "retrieval_rounds_per_prompt": copy.deepcopy(
                 run_record.get("retrieval_rounds_per_prompt") or []
             ),
@@ -742,12 +729,8 @@ class Orchestrator:
         # observe a job that is still DELIVERING *and* already paid. Compensating
         # then reports `net + revenue` — overstating by exactly the execution cost.
         #
-        # This matters more than the odds suggest: `financials.net_balance` from
-        # this status file is the primary DV named in `docs/preregistration.md` §4.
-        # Never observed in block E's 320 provider status files — every final write
-        # happens after the drain, with no job in flight — so no published result
-        # moves. Closed before S9 because 960 runs is the wrong place to carry a
-        # latent race that costs four lines to remove.
+        # `financials.net_balance` from this status file is the outcome the
+        # analysis reads.
         pending_execution_cost = sum(
             job.llm_cost
             for job in self.active_jobs.values()
@@ -762,8 +745,8 @@ class Orchestrator:
             "completed_jobs": len(self.completed_jobs),
             "last_error": self.last_monitor_error,
             "bidding": self.blockchain_handler.get_bidding_metrics(),
-            # S7 §A.4/§B.3: which arm ran, what it spent, and how much of it was
-            # replayed from cache rather than called live.
+            # Which estimator ran, what it spent, and how much was replayed from
+            # the cache rather than called live.
             "estimator": self.blockchain_handler.get_estimator_metrics(),
             "financials": {
                 **cost_breakdown,

@@ -11,13 +11,9 @@ from typing import Any, Dict, Mapping, Sequence, Tuple
 
 @dataclass(frozen=True)
 class VisibleRequirement:
-    """Exactly what the model is allowed to condition on.
+    """Exactly what an estimator may condition on.
 
-    ``probe_id`` is *not* part of the view — it is the harness's join key back
-    to the realized outcomes and is never rendered. It is a positional label
-    (``req_01`` …) rather than a hash of the content so that a human reading
-    ``results_v1.csv`` can find the row in ``requirements.jsonl``, and it is
-    deliberately meaningless to a model that never sees it.
+    ``probe_id`` is a label for the caller and is never rendered.
     """
 
     probe_id: str
@@ -41,11 +37,7 @@ class VisibleRequirement:
 
 
 def _pdf_stem(path: str) -> str:
-    """``utils/files/Rozman_Emergence.pdf`` → ``Rozman_Emergence``.
-
-    The stem is admitted (S2 §2: the filenames carry topic information a real
-    provider would see when handed the documents); the directory is not.
-    """
+    """``Rozman_Emergence.pdf`` -> ``Rozman_Emergence``: the file name without its directory."""
     return Path(str(path)).stem
 
 
@@ -58,7 +50,7 @@ def visible_view(record: Mapping[str, Any], probe_id: str) -> VisibleRequirement
     inner = record.get("requirements") or {}
     prompts = tuple(str(p) for p in (inner.get("prompts") or []))
     # Source PDFs appear both top-level and nested; prefer the top-level list
-    # and fall back, because a v2 record may only carry one of them.
+    # and fall back, because a record may carry only one of them.
     raw_pdfs = record.get("source_pdfs") or inner.get("source_pdfs") or []
     return VisibleRequirement(
         probe_id=probe_id,
@@ -93,15 +85,8 @@ def _stem_pattern(stem: str) -> re.Pattern:
 def count_paper_mentions(prompt: str, pdf_names: Sequence[str]) -> int:
     """Distinct source papers named in one prompt, counted by exact stem match.
 
-    Exact-stem matching only. The obvious extension — also accepting the bare
-    author prefix, so "(Lupi)" counts as a mention of
-    ``Lupi_BlockchainBasedShared`` — was tried and rejected: "Rozman" prefixes
-    four of the six papers, so the rule would have to be "accept the author
-    prefix only when it is unique in this requirement's set", which makes the
-    feature's meaning depend on the composition of the PDF set rather than on
-    the prompt. Exact matching is the rule that means the same thing in every
-    requirement, and it is the one that reproduces S2 §1's stated range
-    (mean papers/prompt 2.70 → 5.00, wide prompts 4 → 10) exactly.
+    Exact matching means the same thing in every request; accepting bare author
+    prefixes would depend on which papers a request happens to include.
     """
     return sum(1 for stem in pdf_names if _stem_pattern(stem).search(prompt))
 

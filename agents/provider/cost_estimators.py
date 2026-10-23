@@ -73,30 +73,12 @@ def surface_features(requirement: Mapping) -> Optional[Dict[str, float]]:
 
 @dataclass
 class OracleCostEstimator:
-    """A provider that already knows what each job will cost. **A bound, not a competitor.**
+    """Oracle: a provider that already knows what each job will cost. A bound, not a competitor.
 
-    It reads the requirement's true mean execution cost straight out of the
-    dataset and bids off that. Nothing about it is realisable — it is the
-    denominator for `research_plan.md` §S8's *fraction of oracle value
-    recovered*, `(X - H) / (Oracle - H)`, which has no other way of being
-    measured: no S9 cell could otherwise supply the `Oracle` term.
-
-    **What it knows, precisely.** The requirement's mean over its three recorded
-    executions — not the single recording the market will draw and bill it for.
-    That draw is a coin flip made after every bid is committed (σ = 0.0958 across
-    dataset v3), so an arm that knew it would be a different and impossible
-    object: a bidder with knowledge of the future rather than of the task. The
-    3-run mean is exactly the truth convention S8 §C.2 fixed for σ, so this arm
-    scores σ = 0 under it, and the residual 0.0958 under the secondary
-    convention. It is the same quantity S6's oracle policy was fed.
-
-    **It reads the dataset, so it must never be in a confirmatory contrast.**
-    Every other arm sees only the requirement text and its own completed jobs.
-    This one is given the answer. It belongs in block A as a reference line and
-    nowhere else, and results involving it are labelled a bound.
-
-    Free in money and nearly free in time: no LLM call, one dictionary lookup.
-    Its only cost to the campaign is the wall clock of the runs themselves.
+    It reads the request's true mean execution cost from the dataset and bids off
+    that: the mean over its three recorded executions, not the single recording
+    the market will draw and bill, which is drawn after every bid is committed.
+    No LLM call; one dictionary lookup.
     """
 
     mode: str = "oracle"
@@ -104,16 +86,10 @@ class OracleCostEstimator:
     truth: Dict[str, float] = field(default_factory=dict)
     outcomes: List[JobOutcome] = field(default_factory=list)
     degraded: Dict[str, int] = field(default_factory=dict)
-    #: Unused by this arm — it is handed the answer and needs no features. It
-    #: exists because the bidding path gates on `requirement_id not in
-    #: estimator.features` before calling `remember_features`, and every other
-    #: estimator carries it. Omitting it raised `AttributeError` on the first
-    #: auction of every run, which the handler caught as "Error in deterministic
-    #: reasoning" — so the arm silently never bid, rather than crashing.
+    #: Unused (the oracle needs no features), but the bidding path reads it on
+    #: every estimator.
     features: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    #: Where the truth is read from. Set by the handler from the run's own
-    #: sampled-dataset config, so an oracle can never be pointed at a dataset
-    #: the market is not drawing from.
+    #: Where the truth is read from: the run's own dataset, set by the handler.
     dataset_dir: Optional[str] = None
 
     def _degrade(self, reason: str) -> None:
@@ -156,7 +132,7 @@ class OracleCostEstimator:
     ) -> Tuple[float, Dict[str, object]]:
         """``true_mean / level``, so ``level x multiplier`` is the true mean.
 
-        Returns 1.0 — bid the history, exactly as H does — if the requirement is
+        Returns 1.0 — bid the history, as Adaptive does — if the requirement is
         absent from the dataset, rather than inventing a number. That should
         never happen when the arm is pointed at the dataset the market draws
         from, and it is counted in ``degraded`` if it does.
@@ -178,16 +154,14 @@ class OracleCostEstimator:
 
 @dataclass
 class RegressionCostEstimator:
-    """Arm R, refitted on every bid from whatever the agent has won so far."""
+    """Regression, refitted on every bid from the jobs the agent has completed so far."""
 
     mode: str = "r_guarded"
     #: requirement_id -> features, for requirements this agent has seen.
     features: Dict[str, Dict[str, float]] = field(default_factory=dict)
     #: Completed jobs, oldest first.
     outcomes: List[JobOutcome] = field(default_factory=list)
-    #: Why this arm fell back to the heuristic, by reason. Arm R degrades for
-    #: its own reasons (no features, too little history), and an analysis that
-    #: cannot tell those apart cannot say why a run behaved like H.
+    #: Why the estimator fell back to the heuristic, by reason.
     degraded: Dict[str, int] = field(default_factory=dict)
 
     def _degrade(self, reason: str) -> None:
@@ -215,19 +189,10 @@ class RegressionCostEstimator:
     ) -> Tuple[float, Dict[str, object]]:
         """Return ``(multiplier, diagnostics)`` for one tier of one auction.
 
-        ``deadline_seconds`` is accepted and ignored. The bidding path passes it
-        to whatever estimator is configured, because arm X runs an LLM call
-        inside the commit window and must be cut off before the window closes.
-        Arm R makes no call and has nothing to time out — but the parameter is
-        part of the shared interface, and omitting it here raised
-        ``TypeError: unexpected keyword argument 'deadline_seconds'`` on the
-        first bid of every R arm. Seventeen of the S7 matrix's thirty-two cells
-        are R contrasts; none had been run between the deadline landing and this
-        being caught.
-
-        A multiplier of exactly 1.0 means "no adjustment" — the agent bids its
-        history, which is what H does. That is the cold-start behaviour of
-        ``r_guarded`` and the no-usable-feature behaviour of both arms.
+        ``deadline_seconds`` is part of the shared estimator interface and is ignored:
+        the regression makes no call that could time out. A multiplier of exactly 1.0
+        means "no adjustment" (the agent bids its history, as Adaptive does), which is
+        the behaviour while the guard withholds the fit and when no feature is usable.
         """
         from agents.provider.estimation import regression
         from agents.provider.estimation.requirement import SURFACE_FEATURES
@@ -239,8 +204,7 @@ class RegressionCostEstimator:
             return 1.0, {"reason": "no_features"}
 
         # Strictly the agent's own completed jobs at this tier, and never the
-        # requirement being priced right now (§B.3's rule, which applies to R
-        # for the same reason it applies to the hybrid).
+        # request being priced right now.
         observed = [
             (self.features[outcome.requirement_id], outcome.realized_cost_usd)
             for outcome in self.outcomes
@@ -276,27 +240,14 @@ async def _within_deadline(awaitable, deadline_seconds: Optional[float]):
 
 
 def requirement_payload(requirement: Mapping) -> Dict:
-    """The fields S5 renders into the prompt. No identifiers, by construction.
+    """The fields of a request that the LLM-Estimate prompt renders. No identifiers.
 
-    **Delegates to S5's own projection** rather than rebuilding it. The two used
-    to be parallel implementations and drifted: this one passed
-    ``source_pdf_names`` as stored — ``utils/files/v2/Luu_Scaling.pdf`` — while
-    S5 renders the stem, ``Luu_Scaling`` (`dataset._pdf_stem`, admitted because
-    "the filenames carry topic information a real provider would see", with the
-    directory deliberately excluded). Every one of dataset v2's 30 requirements
-    differed, in the current job *and* in every history example, so the live arm
-    X was never sent the prompt S5 measured.
-
-    Delegating is the same rule this module already applies to the fit itself:
-    the estimator S5 measured and the estimator the agent runs cannot be allowed
-    to mean two different things. Pinned by
-    ``test_s7_prompt_parity.py::TestPayloadParity``.
+    Source PDFs appear as bare file stems (their names carry topic information a
+    provider would see); their directory is excluded.
     """
     from agents.provider.estimation import requirement as estimation_requirement
 
-    # ``probe_id`` is the probe harness's join key back to its own results and
-    # is excluded from ``as_payload()`` by construction, so it never reaches the
-    # model and any value serves here.
+    # ``probe_id`` is excluded from ``as_payload()``, so any value serves here.
     return estimation_requirement.visible_view(requirement, probe_id="live").as_payload()
 
 
@@ -401,14 +352,8 @@ class DecomposedCostEstimator:
         from agents.provider.estimation import prompt as estimation_prompt
 
         if tier != DECOMPOSED_TIER:
-            # **Not counted as a degradation.** The handler asks every tier on
-            # every auction, so this fires twice per auction by construction —
-            # 594 times across a ten-seed pilot, against 103 real cold starts and
-            # one out-of-bounds estimate. Counting it buried the two entries the
-            # counter exists to surface. Nothing is lost: no call is made, the
-            # multiplier is the heuristic's 1.0, architecture 2 prices off medium
-            # alone so the value is never used, and the reason is still on the
-            # per-auction log line.
+            # Not counted as a degradation: the handler asks every tier on every
+            # auction, and the agent prices off medium alone.
             return 1.0, {"reason": "tier_not_supported", "tier": tier}
         if tier_level_usd <= 0:
             self._degrade("no_level")
@@ -420,20 +365,10 @@ class DecomposedCostEstimator:
             self._degrade("no_payload")
             return 1.0, {"reason": "no_payload"}
 
-        # **The call is not gated.** An earlier version returned here when the
-        # calibration set was short, to avoid paying for an estimate it could not
-        # convert — and deadlocked: `calibration` only grows from auctions where
-        # rounds were predicted, rounds are only predicted when the estimator
-        # runs, and the estimator only ran once `calibration` was long enough. The
-        # arm could never leave cold start, and every gate test passed because the
-        # fixtures injected `pending_rounds` directly, reaching a state the live
-        # loop cannot.
-        #
-        # So the depths are always elicited and always recorded. What the gate
-        # controls is only whether they are *bid on*: below it the arm returns 1.0
-        # (pure heuristic, the caller's chosen cold-start behaviour) while the
-        # observation still accrues. Two warm-up calls at ~$0.0004 buy the
-        # calibration the arm runs on for the rest of the market.
+        # The call is not gated on calibration: the depths are always elicited and
+        # recorded, because calibration only grows from jobs whose depths were
+        # predicted. The gate controls only whether the estimate is bid on; below
+        # it the estimator returns 1.0 (the heuristic) while observations accrue.
         fit = (
             estimation_prompt.calibrate(self.calibration, two_param=True)
             if len(self.calibration) >= DECOMPOSED_MIN_CALIBRATION else None
@@ -491,9 +426,8 @@ class DecomposedCostEstimator:
             getattr(result.estimate, "prompt_rounds", []) or [], n_prompts
         )
         if rounds is None:
-            # Wrong length or out of range: the alignment between depths and
-            # prompts *is* the protocol, so a mismatch is not repaired by
-            # guessing at it.
+            # Wrong length or out of range: the alignment between depths and prompts
+            # is the protocol, so a mismatch is not repaired by guessing.
             self.calls_failed += 1
             self._degrade("bad_rounds")
             return 1.0, {**diagnostics, "reason": "bad_rounds"}
@@ -504,13 +438,8 @@ class DecomposedCostEstimator:
         # auction the agent loses simply never closes the pair.
         self.pending_rounds[(str(requirement_id), str(tier))] = (n_prompts, sum_rounds)
         diagnostics["sum_rounds"] = round(sum_rounds, 2)
-        # The per-prompt vector, not just its sum. Pricing needs only the sum,
-        # but validating the *mechanism* needs the alignment: dataset v3 records
-        # how many rounds each prompt actually took, and the sharp question —
-        # does the model judge difficulty, or recognise the template the
-        # requirement was written from? — is answered by comparing prompt to
-        # prompt within a job, not job to job. Logging only the sum would leave
-        # v3's per-prompt column with nothing to pair against.
+        # The per-prompt vector, not just its sum: the dataset records how many
+        # rounds each prompt actually took, so the depths can be checked prompt by prompt.
         diagnostics["prompt_rounds"] = [round(float(r), 2) for r in rounds]
 
         if fit is None:
@@ -520,22 +449,10 @@ class DecomposedCostEstimator:
 
         predicted_cost = estimation_prompt.predict_cost(n_prompts, sum_rounds, fit)
         multiplier = predicted_cost / tier_level_usd if tier_level_usd > 0 else 1.0
-        # No output band. Under decomposition the model never emits a
-        # multiplier: it emits one depth per prompt, `clean_rounds` has already
-        # rejected anything outside the protocol's range or misaligned with the
-        # prompt count, and `calibrate` refuses negative coefficients. A cost
-        # built from validated inputs and a non-negative fit is a legitimate
-        # prediction, so a band on the *output* adds nothing.
-        #
-        # It also actively harmed: the `[0.2, 5.0]` band inherited from the
-        # point protocol — where the model DOES emit the multiplier and the
-        # guard is real — fired six times in 1156 estimates, every one of them
-        # on a 3-prompt `locate` task the model had correctly priced at roughly
-        # a fifth of the agent's average. Rejecting to 1.0 then bid the tier
-        # average, a 5x overestimate on the cheapest work in the market.
-        #
-        # What remains is arithmetic sanity, which needs no calibration: a
-        # prediction must be a positive finite number.
+        # No band on the output multiplier: the depths are already validated and the
+        # fit is non-negative, and a band would reject correct estimates for the
+        # cheapest jobs (a fifth of the agent's average). Only arithmetic sanity
+        # remains: a prediction must be a positive finite number.
         if (multiplier != multiplier or multiplier in (float("inf"), float("-inf"))
                 or multiplier <= 0.0):
             self.calls_failed += 1

@@ -148,27 +148,12 @@ def response_schema(n_prompts: int) -> Dict[str, Any]:
 
 
 def render_job(payload: Mapping[str, Any]) -> str:
-    """One requirement as the model sees it — raw text plus extracted features.
-
-    §3.1: the estimator gets the **same** JSON payload the regression's features
-    are derived from, so neither side is shown less.
-    """
+    """One request as the model sees it: its text and countable fields, as JSON."""
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 def _state_block(levels: Mapping[str, Mapping[str, float]]) -> str:
-    """Only the agent's own realised averages.
-
-    The four-number job-shape profile that used to sit here was **removed**
-    (2026-08-17). Two reasons, either sufficient. It described the *distribution
-    requirements are drawn from* — population knowledge a provider acquires only
-    by seeing jobs, and this agent is shown k = 3. And it was computed from all
-    20 dev requirements, so it leaked aggregate structure from 17 jobs the agent
-    never saw, contradicting `hybrid_agent_design.md` §3.3's "computed from the
-    agent's own history, **not from the dataset**".
-
-    What remains is knowable by construction: the agent incurred these costs.
-    """
+    """The agent's own realised per-tier averages, which the answer is relative to."""
     return AGENT_STATE_BLOCK.format(
         low_cost=levels["low"]["cost"], low_quality=levels["low"]["quality"],
         medium_cost=levels["medium"]["cost"], medium_quality=levels["medium"]["quality"],
@@ -206,11 +191,10 @@ def render_user_message(
 def parse_multiplier(content: str, tier: str = TIER) -> llm_client.Estimate:
     """Parse ``{"cost_multiplier": {"medium": x}, "reasoning": "..."}``.
 
-    Reuses S2's repair ladder (whole-body JSON → first ``{...}`` span → literal
-    eval) and its pre-specified failure rule: anything unparseable, refused, or
-    out of bounds becomes multiplier 1.0 flagged as failed, which scores exactly
-    as arm H. An arm must not be able to improve its σ by declining the
-    requirements it finds hard.
+    Uses the repair ladder of :func:`llm_client.parse_estimate` (whole-body JSON,
+    then the first ``{...}`` span, then a literal eval). Anything unparseable or
+    non-finite becomes a flagged fallback with multiplier 1.0, which bids exactly as
+    the heuristic would.
     """
     base = llm_client.parse_estimate(content)
     if base.failed and not (content or "").strip():
@@ -244,20 +228,16 @@ def parse_multiplier(content: str, tier: str = TIER) -> llm_client.Estimate:
 
 
 def parse_response(content: str):
-    """Validate the decomposed schema; carry the per-prompt depths.
+    """Parse LLM-Estimate's answer and attach its per-prompt depths (``prompt_rounds``).
 
-    Returns an ``Estimate`` shaped like the point protocol's — with the model's
-    own ``cost_multiplier``, which is the paired control — plus ``prompt_rounds``
-    attached. The decomposed *estimate* is not computed here: it needs a
-    calibration fitted on jobs completed later in the trajectory, so it is
-    replayed offline from the recorded depths.
+    The estimate itself is computed by the caller from the depths and the agent's
+    own calibration.
     """
     import json as _json
     try:
         payload = _json.loads(content)
         rounds = [float(r) for r in payload["prompt_rounds"]]
-        # Absent in the production variants; the decomposed estimate never uses
-        # it, and 1.0 is the heuristic, so a missing field degrades to H.
+        # Absent from LLM-Estimate's schema, so it defaults to 1.0 (the heuristic).
         multiplier = float((payload.get("cost_multiplier") or {}).get("medium", 1.0))
     except Exception:
         return parse_multiplier(content)  # its repair ladder, then a failed Estimate
