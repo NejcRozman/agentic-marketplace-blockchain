@@ -1,0 +1,211 @@
+# S7 §D — the run matrix, declared once.
+#
+# Each entry is one CELL: a market configuration run at 40 paired seeds
+# (1007–1046). The generator (experiments/scripts/generate_s7_cells.py)
+# materialises a config per cell from `base`, and the launcher runs cells x
+# seeds, so the spec table and this file can be diffed by eye.
+#
+# Composition is 1 v 1 (§0.1a): one agent per arm, every cell, so it cannot
+# confound any contrast. The invasion cell is the robustness probe.
+#
+# Seeds are NOT listed here. One config serves all its seeds via `--run-seed`,
+# which is also what makes the pairing work: xd-vs-H and xd-vs-R_guarded at seed
+# 1007 read the same number and therefore draw the same requirement order.
+#
+# ---------------------------------------------------------------------------
+# The X arm is `decomposed` (X_d) everywhere — decision 2026-09-06.
+#
+# The earlier `hybrid` arm elicited a cost multiplier directly. X_d elicits a
+# retrieval DEPTH per prompt and prices it with a two-parameter fit on the
+# agent's own jobs. On v3 it measures sigma 0.3404 against hybrid-era numbers
+# around 0.52, and block E (§E.5) beat all four opponents at 40 seeds. `hybrid`
+# is retained in code for gate G-B and the S5 prompt-parity test, and appears in
+# no cell.
+#
+# Dataset is **v3** for every cell — it is the only one carrying the per-prompt
+# retrieval-round counter X_d is scored against. v3 is medium tier only, and
+# `DECOMPOSED_TIER = "medium"`, so no cell varies the effort tier.
+# ---------------------------------------------------------------------------
+
+base: "s9_base_v3.yaml"
+
+# The LLM tiers. Latency measured 2026-08-21, 10 calls each.
+#
+# ✅ Per-call cost is EXTRAPOLATED, not separately measured (decision
+# 2026-09-07). gpt-4o-mini is measured at **$0.000378/call, $0.000211/1k tokens**
+# over block E's 4,799 calls; the others scale by their per-token ratio from the
+# probe CSVs: gpt-5.4-mini **4.8x**, gpt-5.4 23.2x, gpt-5-mini 2.4x.
+#
+# The two effects that could have broken that extrapolation were checked against
+# recorded data and are negligible: **prompt caching is 7.0%** of prompt tokens
+# across 6,787 calls, and **reasoning tokens do not inflate output** at
+# `effort: low` — completion/prompt is 0.165 for gpt-4o-mini against 0.168 for
+# gpt-5.4-mini. Measuring each model separately would have bought no information.
+#   gpt-4o-mini   2.84s median / 3.42s p95   $0.0003/call (hybrid)
+#   gpt-5.4-mini  3.31s / 4.71s              $0.0026      (hybrid)
+#   gpt-oss-20b   5.00s / 6.25s              $0.0001      (hybrid)
+#   gpt-5.4       8.08s / 8.81s              $0.0076      (hybrid) <- sets commit_duration
+models:
+  - "openai/gpt-4o-mini"
+  - "openai/gpt-5.4-mini"
+  - "openai/gpt-oss-20b"
+  - "openai/gpt-5.4"
+
+# Block A's *new* cells. Two exclusions, both deliberate:
+#
+# `gpt-4o-mini` at rw=20 is already run — it is block E's E_xd_vs_h_v3 and
+# E_xd_vs_r_v3 — so re-running it would spend budget reproducing a ledger entry.
+#
+# `gpt-5.4` is DROPPED (decision 2026-09-07). The handoff's bounds table settles
+# it: an oracle knowing every job's TRUE measured retrieval depth, priced through
+# the same `b·Sigma(rounds)` cost model, reaches sigma_cost 0.3368; X_d already
+# reaches 0.3404. **The entire remaining headroom in the depth channel is 1%**,
+# and it belongs to the cost model's functional form, not to the estimator — so
+# no model, however capable, can claim it. Perfect ordering is inside that bound
+# too, since the oracle has it. Paying 23.2x per token to compete for 1% is
+# indefensible, and S6 independently found frontier models cannot pay at any
+# sigma. ⚠️ S9 therefore says nothing about frontier models from its own data and
+# must cite S6's simulation — disclose it.
+block_a_models:
+  - "openai/gpt-5.4-mini"
+  - "openai/gpt-oss-20b"
+
+# DEVIATION (2026-09-09): block B now carries only gpt-oss-20b, the model
+# selected in §11a and the one block C's O2c ablation ran on. As written this
+# block swept rw on the two NON-selected models, leaving the selected model
+# with no rw curve at all. Cost of the change: the model x rw interaction is
+# no longer estimable, so we can show "value falls with rw" but not that the
+# slope is model-dependent. Accepted because 12/12 paired model-vs-model
+# tests were null (largest p = 0.204).
+block_b_models:
+  - "openai/gpt-oss-20b"
+
+# rw = 20 is excluded: block E ran it for both contrasts on gpt-4o-mini, and
+# block A runs it for gpt-5.4-mini.
+#
+# rw = 0 added 2026-09-09: the low boundary, where the contract awards on price
+# alone. Reaching it required fixing a falsy-zero coercion in the provider read
+# path (`... or 50` turned rw=0 into rw=50); see
+# agents/tests/test_s9_reputation_weight_zero.py. The fix is inert for every
+# other rw, so it does not disturb completed cells.
+block_b_rw: [0, 35, 50, 65, 80]
+
+# The contrasts of interest (§0.1). H-vs-R is deliberately not run.
+#
+# Blocks A and B carry H + R_guarded only — decision 2026-09-06. H is the
+# do-nothing baseline and R_guarded the strongest free opponent; carrying all
+# four everywhere would quadruple the matrix to re-establish, across models and
+# rw, two points block E already settled at the centre. R_naive (harmful, not
+# merely weak) and R-D (the mechanism contrast) stay at the centre point.
+contrasts:
+  xd_vs_h:         {a: "decomposed", b: "none"}
+  xd_vs_rguarded:  {a: "decomposed", b: "r_guarded"}
+  # The oracle reference. `a` is the oracle so the generator's arm-a naming and
+  # the analysis's `X_`-prefix convention both still hold; the paired difference
+  # these cells produce is Oracle - H, the denominator of §S8's *fraction of
+  # oracle value recovered*, (X - H) / (Oracle - H).
+  oracle_vs_h:     {a: "oracle", b: "none"}
+  # Head-to-head: perfect cost knowledge against LLM-elicited depth, in the SAME
+  # market. Every earlier oracle-vs-X_d comparison was across cells and so
+  # confounded by which opponent each arm happened to face.
+  oracle_vs_xd:    {a: "oracle", b: "decomposed"}
+
+# Fixed everywhere unless a cell overrides it.
+defaults:
+  rw: 20                       # the carrier: where cost information is worth
+                               # most, the condition most favourable to an
+                               # expensive model
+  action_space: "price_or_decline"   # O2c on (§C.2) — S6's rung, verbatim
+  commit_duration_with_llm: 20 # the frontier tier needs ~14s inside the window
+  commit_duration_no_llm: 10   # cells with no estimator call
+
+blocks:
+  # ---- A: which model tier, if any, pays for itself (4 new cells) ----------
+  # 2 new tiers x 2 contrasts at rw=20; gpt-4o-mini is block E and gpt-5.4 is
+  # dropped (see block_a_models). Block A picks rw=20 deliberately: cost
+  # information is worth most there, so it is the condition most favourable to
+  # an expensive model. A cheap model that wins there wins everywhere.
+  #
+  # With the frontier gone the interesting direction has flipped to the CHEAP
+  # end: S6 put the optimum near $0.0006/call and gpt-4o-mini measures
+  # $0.000378, so `gpt-oss-20b` asks whether cheaper still is viable — for $0.30.
+  # `gpt-5.4-mini` is retained as the only more-expensive point, because "which
+  # tier pays for itself" is not answerable from one tier.
+  A:
+    description: "2 new LLM tiers x 2 contrasts at rw=20, plus the oracle reference"
+    vary: {model: block_a_models, contrast: [xd_vs_h, xd_vs_rguarded]}
+    cells:
+      # ⚠️ A BOUND, NOT A COMPETITOR — and never in a confirmatory contrast.
+      # `oracle` reads each requirement's true mean execution cost straight out
+      # of the dataset. Every other arm sees only the requirement text and its
+      # own completed jobs; this one is handed the answer.
+      #
+      # It exists because `research_plan.md` §S8 names *fraction of oracle value
+      # recovered*, (X - H) / (Oracle - H), and no other S9 cell can supply the
+      # denominator. Block E already measured X - H at these seeds, so this cell
+      # completes the ratio.
+      #
+      # Free in money — no LLM call, one dictionary lookup — so its whole cost is
+      # the wall clock of 40 runs.
+      # The head-to-head, run at both O2c settings. O2c penalises better
+      # estimators harder (decline rate rises with estimator quality: 8% ->
+      # 17% -> 25%), so running only O2c=on would handicap the oracle more
+      # than X_d and bias the very comparison being made.
+      - {id: "A_oracle_vs_xd", contrast: oracle_vs_xd, rw: 20,
+         model: "openai/gpt-oss-20b",
+         note: "head-to-head, O2c on (matches the rest of block A)"}
+      - {id: "A_oracle_noO2c_vs_xd", contrast: oracle_vs_xd, rw: 20,
+         model: "openai/gpt-oss-20b", action_space: "price_only",
+         note: "head-to-head with the miscalibrated abstention rule removed"}
+      - {id: "A_oracle_vs_h", contrast: oracle_vs_h, rw: 20,
+         note: "upper bound: what a provider that already knew every cost would earn"}
+
+  # ---- B: where task information stops being worth buying (16 cells) -------
+  B:
+    description: "4 rw x 2 models x 2 contrasts, excluding rw=20"
+    vary: {model: block_b_models, rw: block_b_rw, contrast: [xd_vs_h, xd_vs_rguarded]}
+
+  # ---- C: how much of the effect is abstention vs estimation (2 cells) -----
+  # The main competing explanation for block E: does X_d win by estimating well
+  # or merely by declining well? O2c and rw interact — at high rw a
+  # low-reputation agent cannot win anyway so declining is nearly free; at low
+  # rw it forfeits winnable jobs — so the ablation is run at both ends.
+  #
+  # ⚠️ The two `span` cells that used to live here are DELETED (2026-09-06).
+  # `history_mode` is not read anywhere on the live agent path — only the
+  # generator wrote it and an offline probe consumes it — so the span ablation
+  # was never runnable and the cells silently duplicated the last_k ones.
+  C:
+    description: "O2c off at two rw, X_d vs R_guarded"
+    cells:
+      - {id: "C_o2c_off_rw20", contrast: xd_vs_rguarded, rw: 20, action_space: "price_only"}
+      - {id: "C_o2c_off_rw80", contrast: xd_vs_rguarded, rw: 80, action_space: "price_only"}
+
+  # ---- D: composition robustness (1 cell) ---------------------------------
+  # The R_naive reconnect that used to live here is done: block E ran it at 40
+  # seeds as E_xd_vs_rnaive_v3 (+0.8189, t=6.45).
+  D:
+    description: "the composition robustness probe"
+    cells:
+      # Model pinned to gpt-oss-20b (2026-09-10): without it these fall back to
+      # models[0] (gpt-4o-mini) and would not be comparable to blocks A/B/C,
+      # which all run the §11a-selected model.
+      - {id: "D_invasion_1v3", contrast: xd_vs_h, rw: 20, composition: "1v3",
+         model: "openai/gpt-oss-20b",
+         note: "one X_d among three heuristics — the only evidence that speaks
+                to 1v1 being a duopoly (§0.1a)"}
+      - {id: "D_invasion_1v3_rguarded", contrast: xd_vs_rguarded, rw: 20,
+         composition: "1v3", model: "openai/gpt-oss-20b",
+         note: "same probe against the regression baseline, so the composition
+                result is not specific to the running-average opponent"}
+
+# ---- E: COMPLETE. Run 2026-09-03/05 at 40 seeds; see §E.5 -------------------
+# The four block E cells are hand-authored and deliberately NOT generated from
+# this file: they are already in the ledger with 160 clean runs, and
+# regenerating them would rewrite their provider group names and orphan the
+# completed analysis. Treat them as read-only.
+#
+#   E_xd_vs_h_v3        X_d vs H          +0.2406  t(39)=+7.04
+#   E_xd_vs_r_v3        X_d vs R_guarded  +0.1566  t(39)=+4.33
+#   E_xd_vs_rnaive_v3   X_d vs R_naive    +0.8189  t(39)=+6.45
+#   E_xd_vs_rd_v3       X_d vs R-D        +0.3087  t(39)=+6.69

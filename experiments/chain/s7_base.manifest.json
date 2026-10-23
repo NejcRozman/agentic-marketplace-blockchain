@@ -1,0 +1,18 @@
+{
+  "snapshot": "s7_base.json",
+  "sha256": "e31c3edb597286bd464484a50755eaa628dbe5c83a62d15f62a0856a628ca0da",
+  "size_bytes": 246448,
+  "built_at": "2026-08-19T19:44:56.823544Z",
+  "source_config": "/tmp/claude-1000/s7_snapshot_src.yaml",
+  "fork_network": "sepolia",
+  "fork_block_number": 11523942,
+  "dumped_at_chain_id": 8000,
+  "identity_registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+  "reputation_registry": "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+  "erc1967_implementations": {
+    "0x8004A818BFB912233c491871b3d84c89A494BD9e": "0x7274e874ca62410a93bd8bf61c69d8045e399c02",
+    "0x8004B663056A597Dffe9eCcC1965A193B7388713": "0x16e0fa7f7c56b9a767e34b192b51f921be31da34"
+  },
+  "verification_agent_id": 9690,
+  "verified_offline": true
+}

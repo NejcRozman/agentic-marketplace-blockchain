@@ -1,0 +1,11 @@
+data/
+__pycache__/
+*.pyc
+.env
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+analysis/figures/
+.venv/
+.vscode/
+workspaces/

@@ -1,0 +1,220 @@
+# Corpus v2 — pinned spec for the literature-analysis workload (S3 §0).
+#
+# 30 papers, 6 areas, 12 clusters. arXiv ids carry explicit versions so
+# `build` reconstructs byte-identical PDFs on any future run.
+#
+# Design, against S3 §0:
+#   - 20-30 papers .......... 30.
+#   - clusters of 3-5 ....... every area splits into 2 sub-clusters that share
+#                             a subject, so cross-document synthesis inside a
+#                             cluster is meaningful.
+#   - spread over >= 4 areas  6 areas. Blockchain sharding and recsys
+#                             reproducibility are genuinely unrelated, which is
+#                             what makes "these papers barely connect" a real
+#                             condition rather than a hypothetical.
+#   - some disagreeing pairs  9 conflict links, all well-documented disputes in
+#                             their fields rather than pairs that merely differ.
+#                             §0 says not to spend collection effort hunting
+#                             these; curating from known controversies costs
+#                             nothing extra, so they are recorded and available
+#                             for S4's deep-synthesis prompts.
+#
+# `stem` is set explicitly on every paper. It is not cosmetic: the executor
+# hands it to the RAG as `source_id` and the estimation probe reads it as
+# `source_pdf_names`, so it is task information a real provider would see. The
+# filename-generating heuristic would collapse "Emergent Abilities of Large
+# Language Models" and "Are Emergent Abilities ... a Mirage?" onto near-identical
+# stems, erasing the one distinction that matters.
+#
+# `conflicts_with` references the pinned id as written below. Links are recorded
+# on one side of each pair; the manifest resolves them to stems.
+
+corpus_id: v2
+source: arXiv
+
+areas:
+
+  # ---------------------------------------------------------------------
+  - name: blockchain_scaling
+    description: >
+      Layer-1 sharding versus layer-2 rollups as the route to blockchain
+      throughput. Continuity with the v1 corpus, whose central finding was a
+      L1/L2 split across smart-manufacturing systems.
+    clusters:
+      - name: l1_sharding
+        papers:
+          - id: 1804.00399v4
+            stem: Luu_ScalingBlockchainSharding
+            note: Elastico-lineage; argues sharding scales the base layer itself.
+            conflicts_with: [2404.16150v1, 2310.03616v1]
+          - id: 1910.00765v2
+            stem: Amiri_SharperPermissionedSharding
+            note: Sharding for permissioned chains over network clusters.
+          - id: 2407.06953v2
+            stem: Huang_SpChainShardSecurity
+            note: Claims intra/cross-shard security and performance can improve together.
+      - name: l2_rollups
+        papers:
+          - id: 2404.16150v1
+            stem: Sguanci_RollupComparisonFramework
+            note: >
+              Positions rollups, not sharding, as the practical scaling route —
+              the counterpart to the L1 sharding claims.
+          - id: 2310.03616v1
+            stem: Motepalli_DecentralizedSequencersRollups
+            note: Sequencer centralisation as the unresolved cost of the L2 route.
+
+  # ---------------------------------------------------------------------
+  - name: llm_emergence_reasoning
+    description: >
+      Whether large models acquire genuinely new capabilities, and whether
+      chain-of-thought traces reflect the computation that produced the answer.
+      Two of the sharpest documented disputes in the field.
+    clusters:
+      - name: emergent_abilities
+        papers:
+          - id: 2206.07682v2
+            stem: Wei_EmergentAbilitiesLlms
+            note: The original emergence claim — sharp, unpredictable capability jumps.
+            conflicts_with: [2304.15004v2]
+          - id: 2304.15004v2
+            stem: Schaeffer_EmergentAbilitiesMirage
+            note: >
+              Direct rebuttal: emergence is an artifact of discontinuous metrics,
+              not model behaviour. Same phenomenon, opposite conclusion.
+      - name: chain_of_thought
+        papers:
+          - id: 2201.11903v6
+            stem: Wei_ChainOfThoughtPrompting
+            note: CoT elicits reasoning; the trace is treated as the reasoning.
+            conflicts_with: [2305.04388v2]
+          - id: 2305.04388v2
+            stem: Turpin_UnfaithfulChainOfThought
+            note: >
+              CoT explanations systematically misrepresent the real cause of the
+              answer. Reconciling this with Wei et al. requires reading both.
+
+  # ---------------------------------------------------------------------
+  - name: rag_long_context
+    description: >
+      Retrieval-augmented generation versus long-context prompting. Chosen
+      partly because the executor under study *is* a RAG system, so these
+      papers describe the mechanism the experiment measures.
+    clusters:
+      - name: rag_foundations
+        papers:
+          - id: 2005.11401v4
+            stem: Lewis_RetrievalAugmentedGeneration
+            note: The original RAG formulation.
+          - id: 2401.05856v1
+            stem: Barnett_SevenFailurePointsRag
+            note: Engineering failure modes observed in deployed RAG systems.
+      - name: rag_vs_long_context
+        papers:
+          - id: 2307.03172v3
+            stem: Liu_LostInTheMiddle
+            note: Long contexts degrade in the middle — the case against dropping retrieval.
+          - id: 2407.16833v2
+            stem: Li_RagOrLongContext
+            note: Long-context wins given budget; proposes a hybrid route.
+            conflicts_with: [2502.09977v2]
+          - id: 2502.09977v2
+            stem: Li_LaraNoSilverBullet
+            note: >
+              Neither dominates; the earlier comparison's conclusion is
+              benchmark-dependent. Contradicts 2407.16833 on the same question.
+          - id: 2406.15319v3
+            stem: Jiang_LongRagLongContext
+            note: Long context makes retrieval better rather than redundant.
+
+  # ---------------------------------------------------------------------
+  - name: federated_privacy
+    description: >
+      Whether keeping raw data on-device actually protects it. The founding
+      papers frame gradient sharing as privacy-preserving; the attack papers
+      reconstruct training data from exactly those gradients.
+    clusters:
+      - name: fl_foundations
+        papers:
+          - id: 1602.05629v4
+            stem: Mcmahan_FederatedAveraging
+            note: FedAvg — raw data never leaves the device, framed as a privacy property.
+            conflicts_with: [1906.08935v2, 2003.14053v2]
+          - id: 1912.04977v3
+            stem: Kairouz_AdvancesOpenProblemsFl
+            note: Broad survey; useful as the terminology bridge across this area.
+          - id: 1611.04482v1
+            stem: Bonawitz_PracticalSecureAggregation
+            note: The cryptographic defence, and the assumptions it needs.
+      - name: gradient_leakage
+        papers:
+          - id: 1906.08935v2
+            stem: Zhu_DeepLeakageFromGradients
+            note: Pixel-accurate reconstruction of training data from shared gradients.
+          - id: 2003.14053v2
+            stem: Geiping_InvertingGradientsPrivacy
+            note: Reconstruction at realistic scale; directly attacks the FedAvg framing.
+
+  # ---------------------------------------------------------------------
+  - name: recsys_ir_reproducibility
+    description: >
+      The reproducibility dispute in recommender systems and IR: whether a
+      decade of neural results beat properly tuned classical baselines. A rare
+      case where the disagreement is about evidence quality, not method.
+    clusters:
+      - name: neural_recsys
+        papers:
+          - id: 1708.05031v2
+            stem: He_NeuralCollaborativeFiltering
+            note: NCF — neural interaction functions beat matrix factorisation.
+            conflicts_with: [2005.09683v2, 1907.06902v3]
+          - id: 2005.09683v2
+            stem: Rendle_NcfVsMatrixFactorization
+            note: >
+              A properly tuned dot product beats the learned similarity NCF
+              reported. Same datasets, opposite conclusion.
+      - name: reproducibility_critiques
+        papers:
+          - id: 1907.06902v3
+            stem: Dacrema_WorryingAnalysisNeuralRecsys
+            note: 11 of 12 recent neural methods fail to beat simple baselines.
+          - id: 1911.07698v3
+            stem: Dacrema_TroublingReproducibilityRecsys
+            note: The extended analysis; overlaps 1907.06902 in method and conclusion.
+          - id: 1904.09171v2
+            stem: Lin_CriticallyExaminingNeuralHype
+            note: The same critique in ad-hoc retrieval — weak baselines, non-additive gains.
+
+  # ---------------------------------------------------------------------
+  - name: agentic_llm_systems
+    description: >
+      Whether LLM agents improve their own output through debate or
+      self-critique. Both sub-clusters contain a positive result and a direct
+      refutation, and this is the area closest to the marketplace's own design.
+    clusters:
+      - name: multiagent_debate
+        papers:
+          - id: 2305.14325v1
+            stem: Du_MultiagentDebateFactuality
+            note: Debate between model instances improves factuality and reasoning.
+            conflicts_with: [2311.17371v3]
+          - id: 2311.17371v3
+            stem: Smit_ShouldWeBeGoingMad
+            note: >
+              The debate gains largely vanish against properly matched
+              single-agent baselines at equal inference cost.
+      - name: self_correction
+        papers:
+          - id: 2303.17651v2
+            stem: Madaan_SelfRefineIterativeFeedback
+            note: Self-generated feedback improves output across tasks.
+            conflicts_with: [2310.01798v2]
+          - id: 2303.11366v4
+            stem: Shinn_ReflexionVerbalReinforcement
+            note: Verbal self-reflection as a learning signal for agents.
+            conflicts_with: [2310.01798v2]
+          - id: 2310.01798v2
+            stem: Huang_LlmsCannotSelfCorrect
+            note: >
+              Intrinsic self-correction degrades reasoning without an external
+              signal; attributes prior gains to oracle labels.
