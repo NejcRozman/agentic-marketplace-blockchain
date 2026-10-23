@@ -1,23 +1,17 @@
 """Per-agent random number generators, derived from the run seed.
 
-Every controllable draw on the live agent path must come from an RNG instance
-owned by the drawing agent, never from the ``random`` module's global generator.
-
-A global ``random.seed()`` is **not** an acceptable substitute. The agents are
-async and interleave at ``await`` points, so a global seed fixes the *sequence*
-of draws but not which agent receives which draw — the appearance of control
-without the substance.
+Every random draw of an agent comes from an RNG instance it owns, never from the
+``random`` module's global generator: the agents are async and interleave at
+``await`` points, so a global seed would fix the sequence of draws but not which
+agent receives which draw.
 
 One seed per run, derived per agent::
 
     run_seed = 1007
     provider 4427 -> random.Random(1007 + 4427)
-    provider 4428 -> random.Random(1007 + 4428)
     consumer 1    -> random.Random(1007 + 1)
 
-The same derivation is used for the dataset sampler in
-``provider/orchestrator.py``, so an agent's policy draws and its dataset draws
-move together under the same run seed.
+The dataset sampler in ``provider/orchestrator.py`` uses the same derivation.
 """
 
 from __future__ import annotations
@@ -45,10 +39,6 @@ def derive_agent_seed(run_seed: Optional[int], agent_id: Optional[int]) -> Optio
 
 
 def agent_rng(run_seed: Optional[int], agent_id: Optional[int]) -> random.Random:
-    """Return this agent's private RNG.
-
-    Unseeded runs still get a private instance, not the global module, so the
-    ``test_s7_no_global_random`` scan holds regardless of configuration.
-    """
+    """Return this agent's private RNG; unseeded runs still get a private instance."""
     seed = derive_agent_seed(run_seed, agent_id)
     return random.Random(seed) if seed is not None else random.Random()

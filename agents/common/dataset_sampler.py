@@ -58,15 +58,13 @@ class DatasetSampler:
 
         self._index_records()
 
-        # The shuffled pass is drawn once, at construction, so the whole order is
-        # a deterministic function of the seed rather than of how many times the
-        # agent happened to call in.
+        # The shuffled pass is drawn once, at construction, so the order depends on
+        # the seed alone.
         self._shuffled_requirement_order: List[str] = list(self._requirement_order)
         if self.requirement_selection_mode == "shuffled_pass":
             self._rng.shuffle(self._shuffled_requirement_order)
 
-        # The pass limit is the run horizon. It makes the horizon explicit and
-        # keeps exhaustion a hard error.
+        # The pass limit makes the run horizon explicit and exhaustion an error.
         self.requirement_pass_limit = (
             None if requirement_pass_limit is None else int(requirement_pass_limit)
         )
@@ -124,12 +122,10 @@ class DatasetSampler:
         return list(self._requirement_order)
 
     def next_requirement_id(self) -> str:
-        """Return the next requirement id in the run's pass, without replacement.
+        """Return the next request in the run's pass, without replacement.
 
-        Raises once the pass is exhausted. That is the point of the mode: a 31st
-        auction against a 30-requirement dataset is a misconfiguration, and the
-        run must stop rather than quietly serve a requirement the agent has
-        already executed and priced.
+        Raises once the pass is exhausted: serving a request again would hand the agent
+        a job already in its own cost history.
         """
         order = self.requirement_pass_order()
         if not order:

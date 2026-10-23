@@ -1,4 +1,4 @@
-"""Shared infrastructure utilities for all agent types."""
+"""Infrastructure shared by the consumer and provider agents."""
 
 from .blockchain_client import BlockchainClient
 from .ipfs_client import (

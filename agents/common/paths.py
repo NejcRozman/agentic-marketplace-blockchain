@@ -7,13 +7,14 @@ variable:
     data/ledger.jsonl            one line per completed (condition, seed) run
     data/runs/logs/<id>/<run>/   agent logs and status files of each run
     data/runs/metrics/<id>/<run>/experiment_metrics.json
-    data/dataset/final/          recorded service dataset (requirements, runs)
+    data/dataset/final/          recorded service dataset (requests, runs)
     data/dataset/artifacts/      per-execution artifacts of the dataset
     data/llm_cache/              cache of estimator LLM calls
+    data/corpus/                 source papers of the dataset collection
 
-Records written during the experiments store paths relative to the original
-repository layout (e.g. ``experiments/data/logs/...``); :func:`resolve` maps
-them to their location under the data directory.
+Records written during the experiments store paths of the original repository
+layout (e.g. ``experiments/data/logs/...``); :func:`resolve` maps them to their
+location under the data directory.
 """
 from __future__ import annotations
 

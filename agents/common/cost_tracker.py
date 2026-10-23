@@ -1,9 +1,7 @@
-"""
-Cost tracking infrastructure for agent economic simulation.
+"""An agent's accounting: LLM costs, gas and revenue.
 
-Provides:
-- CostTracker: Simple in-memory accounting for LLM costs, gas fees, and revenue
-- LLMCostCallback: LangChain callback handler to automatically track LLM token usage
+``CostTracker`` holds the running totals and the execution-cost history the
+pricing uses; ``LLMCostCallback`` records the cost of every LangChain LLM call.
 """
 
 import logging
@@ -14,11 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMCostCallback(BaseCallbackHandler):
-    """
-    Callback handler to track LLM token usage and costs.
-    
-    Integrates with CostTracker to record actual LLM expenses.
-    """
+    """LangChain callback that records the cost of each LLM call in a CostTracker."""
     
     def __init__(
         self,
@@ -39,12 +33,10 @@ class LLMCostCallback(BaseCallbackHandler):
     
     @staticmethod
     def _reported_cost(response):
-        """The provider's own billed cost for this call, or None.
+        """The provider's own billed cost of this call (OpenRouter's ``usage.cost``), or None.
 
-        OpenRouter surfaces it as `usage.cost`; LangChain carries the raw usage
-        dict through either `llm_output["token_usage"]` or the message's
-        `response_metadata["token_usage"]`. Returns None when absent so the
-        caller can fall back to config pricing.
+        LangChain carries the usage either in ``llm_output["token_usage"]`` or in the
+        message's ``response_metadata["token_usage"]``.
         """
         def _dig(usage):
             if not isinstance(usage, dict):
@@ -73,7 +65,7 @@ class LLMCostCallback(BaseCallbackHandler):
         return None
 
     def on_llm_end(self, response, **kwargs):
-        """Called when LLM finishes - calculate cost from token usage."""
+        """Record the call's cost, from the billed cost or else from tokens and configured prices."""
         try:
             input_tokens = 0
             output_tokens = 0
@@ -84,13 +76,13 @@ class LLMCostCallback(BaseCallbackHandler):
                 except (TypeError, ValueError):
                     return 0
 
-            # Format 1: llm_output.token_usage
+            # Usage either in llm_output.token_usage ...
             if hasattr(response, "llm_output") and response.llm_output:
                 token_usage = response.llm_output.get("token_usage", {}) or {}
                 input_tokens = token_usage.get("prompt_tokens", 0) or token_usage.get("input_tokens", 0)
                 output_tokens = token_usage.get("completion_tokens", 0) or token_usage.get("output_tokens", 0)
 
-            # Format 2: generations[*][*].message.usage_metadata / response_metadata.token_usage
+            # ... or in the message's usage_metadata / response_metadata.token_usage.
             if (input_tokens + output_tokens) == 0 and hasattr(response, "generations") and response.generations:
                 try:
                     gen0 = response.generations[0][0]
@@ -112,22 +104,12 @@ class LLMCostCallback(BaseCallbackHandler):
             input_tokens = _to_non_negative_int(input_tokens)
             output_tokens = _to_non_negative_int(output_tokens)
 
-            # Nothing to account for
             if (input_tokens + output_tokens) == 0:
                 return
 
-            # Prefer the provider's OWN billed cost when it is returned.
-            #
-            # OpenRouter returns `usage.cost` (real dollars billed, net of
-            # prompt caching) when the request carries `usage: {include: true}`.
-            # The config fallback below is a single flat rate applied to EVERY
-            # model — $0.00075/1k in, $0.0045/1k out — which for gpt-oss-20b
-            # overstates the true rate by ~27x input / ~33x output. Since only
-            # the LLM arm makes calls, that error is subtracted from its net
-            # balance alone and biases every LLM-vs-heuristic comparison against
-            # the LLM. H2's estimator path (experiments/estimation/llm_client.py)
-            # has always read `usage.cost`; this makes the react path agree, so
-            # H1 and H2 price LLM calls the same way.
+            # Prefer the provider's own billed cost (OpenRouter's `usage.cost`, net of
+            # prompt caching). The configured prices are one flat rate for every model,
+            # which overstates the cost of cheap models such as gpt-oss-20b many times.
             reported = self._reported_cost(response)
             if reported is not None:
                 total_cost = reported
@@ -139,7 +121,6 @@ class LLMCostCallback(BaseCallbackHandler):
             self.total_tokens += (input_tokens + output_tokens)
             self.total_cost += total_cost
 
-            # Record in cost tracker
             self.cost_tracker.add_llm_cost(
                 cost_usd=total_cost,
                 context=f"{self.scope}:{self.model} ({input_tokens}+{output_tokens} tokens)",
@@ -152,16 +133,10 @@ class LLMCostCallback(BaseCallbackHandler):
 
 
 class CostTracker:
-    """
-    Tracks all operational costs for an agent.
-    
-    Simple in-memory accounting:
-    - LLM API calls (reasoning + service execution)
-    - Blockchain gas fees
-    - Revenue from completed services
-    - Service execution cost history (for bidding strategies)
-    
-    No persistence - tracks during agent lifetime only.
+    """In-memory accounting of one agent's costs and revenue for the length of a run.
+
+    LLM calls are split into reasoning (bidding) and service execution, by whether an
+    execution window is open when the call is recorded.
     """
 
     EFFORT_LEVELS = ("low", "medium", "high")
@@ -170,19 +145,18 @@ class CostTracker:
         self.agent_id = agent_id
         self.config = config
         
-        # Cost accumulators (in USD)
+        # Costs in USD.
         self.total_llm_costs = 0.0
         self.total_gas_costs = 0.0
         self.total_revenue = 0.0
 
-        # LLM cost split by regime: reasoning (bidding/monitoring) vs service execution.
-        # These always sum to total_llm_costs; the split is attributed at record time
-        # by whether an execution window is open (see add_llm_cost).
+        # LLM cost split into reasoning (bidding) and service execution; the two sum
+        # to total_llm_costs.
         self.total_reasoning_llm_costs = 0.0
         self.total_service_llm_costs = 0.0
 
-        # Call and token counts per regime, so a change in cost can be attributed to
-        # more calls or to bigger calls rather than left ambiguous.
+        # Calls and tokens per part, so a change in cost can be traced to more calls
+        # or to bigger ones.
         self.reasoning_llm_calls = 0
         self.service_llm_calls = 0
         self.reasoning_input_tokens = 0
@@ -190,8 +164,7 @@ class CostTracker:
         self.service_input_tokens = 0
         self.service_output_tokens = 0
 
-        # Service execution tracking
-        self.service_execution_history = []  # List of raw execution costs (USD)
+        self.service_execution_history = []  # USD, oldest first
         self._current_execution_llm_cost = 0.0
         self._is_executing_service = False
         self._participated_auction_ids = set()
@@ -222,11 +195,10 @@ class CostTracker:
 
     @staticmethod
     def _update_ema(previous: float, sample: float, alpha: float) -> float:
-        """Apply one EMA update step."""
         return (alpha * sample) + ((1.0 - alpha) * previous)
 
     def normalize_effort_tier(self, effort_tier: str = None, default: str = "medium") -> str:
-        """Normalize effort tiers to strict low/medium/high values."""
+        """Normalise an effort tier to low, medium or high."""
         fallback = str(default or "medium").strip().lower()
         if fallback not in self.EFFORT_LEVELS:
             fallback = "medium"
@@ -238,11 +210,10 @@ class CostTracker:
         return normalized if normalized in self.EFFORT_LEVELS else fallback
 
     def get_effort_levels(self) -> list:
-        """Return supported canonical effort levels."""
         return list(self.EFFORT_LEVELS)
 
     def record_auction_participation(self, auction_id: int):
-        """Record a unique auction participation for overhead amortization."""
+        """Record a participation once per auction, for amortising overhead."""
         if auction_id is None:
             return
         auction_id = int(auction_id)
@@ -253,7 +224,7 @@ class CostTracker:
         )
 
     def finalize_auction_participation(self, auction_id: int):
-        """Mark an auction participation as finished so its overhead becomes historical."""
+        """Mark a participation as finished, so its overhead counts as historical."""
         if auction_id is None:
             return
         snapshot = self._active_auction_participation_costs.pop(int(auction_id), None)
@@ -282,30 +253,27 @@ class CostTracker:
             )
 
     def get_participated_auction_count(self) -> int:
-        """Return the number of unique auctions this agent has participated in."""
         return len(self._participated_auction_ids)
 
     def get_completed_service_count(self) -> int:
-        """Return the number of completed service executions."""
         return len(self.service_execution_history)
 
     def get_active_participated_auction_count(self) -> int:
-        """Return the number of participated auctions still in progress."""
         return len(self._active_auction_participation_costs)
 
     def get_average_execution_cost(self, default: float = 0.0) -> float:
-        """Return a prior-seeded EMA estimate of execution costs."""
+        """The execution-cost estimate: an EMA seeded with the configured prior."""
         if not self.service_execution_history:
             return float(default)
 
         if self._execution_cost_ema is not None:
             return float(self._execution_cost_ema)
 
-        # Backward-compatible fallback if history exists but EMA was not initialized.
+        # Fallback when there is history but the EMA was never initialised.
         return sum(self.service_execution_history) / len(self.service_execution_history)
 
     def get_initial_execution_cost_for_effort(self, effort_tier: str = None) -> float:
-        """Resolve configured initial execution-cost prior for a given effort tier."""
+        """The configured execution-cost prior for an effort tier."""
         effort = self.normalize_effort_tier(effort_tier)
 
         resolver = getattr(self.config, "get_initial_service_execution_cost_for_effort", None)
@@ -327,7 +295,7 @@ class CostTracker:
         return fallback
 
     def get_initial_quality_rating_for_effort(self, effort_tier: str = None) -> float:
-        """Resolve configured initial quality-rating prior for a given effort tier."""
+        """The configured quality-rating prior for an effort tier."""
         effort = self.normalize_effort_tier(effort_tier)
 
         resolver = getattr(self.config, "get_initial_quality_rating_for_effort", None)
@@ -361,11 +329,7 @@ class CostTracker:
         return fallback
     
     def start_service_execution(self, effort_tier: str = None):
-        """
-        Begin tracking costs for a service execution.
-        
-        Call this before ServiceExecutor starts processing a service.
-        """
+        """Open an execution window: LLM costs from now on count as service execution."""
         self._current_execution_llm_cost = 0.0
         self._is_executing_service = True
         self._current_execution_effort_tier = self.normalize_effort_tier(effort_tier)
@@ -383,16 +347,9 @@ class CostTracker:
         input_tokens: int = 0,
         output_tokens: int = 0,
     ):
-        """
-        Record LLM API cost.
-        
-        Args:
-            cost_usd: Cost in USD
-            context: Description of what the LLM call was for
-        """
+        """Record an LLM call's cost, as reasoning or as service execution."""
         self.total_llm_costs += cost_usd
 
-        # If we're executing a service, track separately
         if self._is_executing_service:
             self._current_execution_llm_cost += cost_usd
             self._current_execution_input_tokens += int(input_tokens or 0)
@@ -410,23 +367,17 @@ class CostTracker:
         logger.debug(f"💰 LLM cost: ${cost_usd:.4f} ({context})")
     
     def add_gas_cost(self, gas_used: int, gas_price_wei: int, context: str = "transaction"):
-        """
-        Record blockchain gas cost using config constants.
-        
-        Args:
-            gas_used: Gas units consumed
-            gas_price_wei: Gas price in wei (from transaction receipt)
-            context: Description of transaction type
+        """Record a transaction's gas cost.
+
+        ``gas_cost_mode`` "fixed" prices gas at the configured gas price; "receipt" uses the
+        receipt's price when the chain reports one.
         """
         gas_cost_mode = getattr(self.config, "gas_cost_mode", "receipt")
 
-        # fixed: always use configured average gas price (good for scenario modeling)
-        # receipt (default): use on-chain receipt price when available
         if gas_cost_mode == "fixed":
             gas_price_wei = int(self.config.gas_price_gwei * 1e9)
         else:
-            # Some local/forked chains may return 0 effectiveGasPrice in receipts.
-            # Fall back to configured simulation gas price to avoid undercounting.
+            # Local chains may report an effectiveGasPrice of 0; use the configured price.
             if not gas_price_wei or gas_price_wei <= 0:
                 gas_price_wei = int(self.config.gas_price_gwei * 1e9)
                 logger.debug(
@@ -434,7 +385,6 @@ class CostTracker:
                     f"falling back to config gas price {self.config.gas_price_gwei} gwei"
                 )
 
-        # Convert wei to gwei
         gas_price_gwei = gas_price_wei / 1e9
         cost_eth = (gas_used * gas_price_gwei) / 1e9
         cost_usd = cost_eth * self.config.eth_price_usd
@@ -443,23 +393,11 @@ class CostTracker:
         logger.debug(f"⛽ Gas cost: ${cost_usd:.4f} ({context}, {gas_used} gas @ {gas_price_gwei:.4f} gwei)")
     
     def add_revenue(self, revenue_usd: float, context: str = "service_completion"):
-        """
-        Record revenue from winning an auction.
-        
-        Args:
-            revenue_usd: Revenue in USD
-            context: Description of revenue source
-        """
         self.total_revenue += revenue_usd
         logger.info(f"💵 Revenue: ${revenue_usd:.4f} USD ({context})")
     
     def end_service_execution(self, effort_tier: str = None) -> float:
-        """
-        Complete service execution tracking and record to history.
-        
-        Returns:
-            Service execution cost (USD)
-        """
+        """Close the execution window, record the job's cost in the history and return it (USD)."""
         if not self._is_executing_service:
             logger.warning("end_service_execution called but no service execution in progress")
             return 0.0
@@ -519,26 +457,17 @@ class CostTracker:
         return execution_cost
     
     def get_execution_cost_history(self) -> list:
-        """
-        Get raw array of past service execution costs.
-        
-        This is pure information relay - no interpretation or aggregation.
-        BlockchainHandler decides how to use this history.
-        
-        Returns:
-            List of execution costs (USD) in chronological order
-        """
+        """Past execution costs (USD), oldest first."""
         return self.service_execution_history.copy()
 
     def get_execution_counts_by_effort(self) -> dict:
-        """Get number of completed services by effort level."""
         return {
             effort: len(history)
             for effort, history in self._execution_cost_history_by_effort.items()
         }
 
     def get_average_execution_cost_by_effort(self, default=None) -> dict:
-        """Return per-effort prior-seeded EMA estimates of execution costs."""
+        """Per-tier execution-cost estimates (EMAs seeded with the priors)."""
         estimates = {}
 
         def resolve_fallback(effort: str) -> float:
@@ -571,7 +500,7 @@ class CostTracker:
         return estimates
 
     def record_effort_quality_feedback(self, effort_tier: str, score: float) -> None:
-        """Update per-effort feedback quality statistics using Welford's algorithm."""
+        """Update a tier's rating mean and variance (Welford's algorithm)."""
         effort = self.normalize_effort_tier(effort_tier)
         bounded_score = max(0.0, min(100.0, float(score)))
         stats = self._quality_stats_by_effort[effort]
@@ -590,7 +519,7 @@ class CostTracker:
         stats["m2"] = m2
 
     def get_quality_stats_by_effort(self, default_score=None) -> dict:
-        """Return per-effort average score and variance from on-chain feedback."""
+        """Per-tier mean rating and variance from the on-chain feedback."""
         result = {}
 
         def resolve_fallback(effort: str) -> float:
@@ -631,14 +560,13 @@ class CostTracker:
         return result
 
     def _get_total_non_execution_costs(self) -> float:
-        """Return cumulative non-execution costs accrued so far."""
         finalized_execution_cost = sum(self.service_execution_history)
         inflight_execution_cost = self._current_execution_llm_cost if self._is_executing_service else 0.0
         total_costs = self.total_llm_costs + self.total_gas_costs
         return max(0.0, total_costs - finalized_execution_cost - inflight_execution_cost)
 
     def _get_historical_non_execution_costs(self) -> float:
-        """Return non-execution costs accrued before the earliest active auction began."""
+        """Non-execution costs accrued before the earliest active auction began."""
         if not self._active_auction_participation_costs:
             return self._get_total_non_execution_costs()
 
@@ -646,11 +574,10 @@ class CostTracker:
         return max(0.0, oldest_active_cost_snapshot)
 
     def get_average_non_execution_cost_per_auction(self, default: float = 0.0) -> float:
-        """Estimate additive non-execution overhead per participated auction.
+        """Overhead (gas and reasoning) per participated auction.
 
-        This amortizes finalized bidding/reasoning overhead across completed
-        auction participations only. Costs from currently active participations
-        are excluded so the estimate does not drift during each reasoning loop.
+        Amortised over finished participations only, so the estimate does not drift while
+        an auction is in progress.
         """
         finalized_auctions = self.get_participated_auction_count() - self.get_active_participated_auction_count()
         if finalized_auctions <= 0:
@@ -663,13 +590,7 @@ class CostTracker:
         return historical_non_execution_costs / finalized_auctions
 
     def get_unrecovered_overhead_balance(self) -> float:
-        """Return historical non-execution overhead not yet recovered by service margin.
-
-        Positive service margin from completed work can pay back historical bidding
-        and reasoning overhead. This method keeps that recovery accounting
-        separate from direct execution costs so pricing can recover overhead
-        gradually without relying on a win-rate estimate.
-        """
+        """Historical overhead not yet recovered by the margin of completed jobs."""
         finalized_execution_cost = sum(self.service_execution_history)
         historical_non_execution_costs = self._get_historical_non_execution_costs()
 
@@ -677,22 +598,15 @@ class CostTracker:
         return max(0.0, historical_non_execution_costs - recovered_overhead)
     
     def get_net_balance(self) -> float:
-        """
-        Get current net balance (revenue - costs).
-
-        Returns:
-            Net balance in USD
-        """
+        """Revenue minus all costs, in USD."""
         total_costs = self.total_llm_costs + self.total_gas_costs
         return self.total_revenue - total_costs
 
     def get_cost_breakdown(self) -> dict:
-        """Return cost totals with LLM spend split by regime.
+        """Cost totals, with LLM spend split into reasoning and service execution.
 
-        `reasoning_llm_costs` covers bidding/monitoring calls made outside any
-        service-execution window; `service_llm_costs` covers calls made inside
-        one (including sampled-dataset replay, which records its cost inside a
-        start/end execution window). The two always sum to `llm_costs`.
+        Replayed executions record their cost inside an execution window, so they count
+        as service execution. The two LLM parts always sum to ``llm_costs``.
         """
         return {
             "llm_costs": self.total_llm_costs,
@@ -709,15 +623,10 @@ class CostTracker:
         }
 
     def get_avg_gross_margin_per_win(self) -> Optional[float]:
-        """Average gross margin earned on won auctions (USD per win).
+        """Average margin per won auction, before the overhead of lost ones (USD); None before the first win.
 
-        Both revenue and service execution costs accrue only on wins, so
-        (total_revenue - total_execution_cost) / wins is exactly the mean
-        per-win gross margin: how profitable an average win is BEFORE the
-        overhead of bidding on auctions that were lost. This is deliberately
-        distinct from net_balance / wins, which folds every losing auction's
-        overhead into the numerator and can make a profitable win look like a
-        loss. Returns None until the first completed service.
+        (revenue − execution costs) / wins, unlike net balance / wins, which folds the
+        overhead of every lost auction into each win.
         """
         wins = len(self.service_execution_history)
         if wins <= 0:
@@ -726,7 +635,6 @@ class CostTracker:
         return gross_margin_total / wins
 
     def log_summary(self):
-        """Log a summary of current financial state."""
         total_costs = self.total_llm_costs + self.total_gas_costs
         net_balance = self.get_net_balance()
         

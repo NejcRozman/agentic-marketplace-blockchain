@@ -1,10 +1,8 @@
-"""Durable local storage for sealed-bid commit-reveal nonces.
+"""Durable local storage for the nonces of sealed bids.
 
-The ReverseAuction contract's commit phase only stores a hash on-chain; the
-bid amount and nonce needed to reveal it later exist nowhere on-chain. If a
-provider process loses that nonce between commit and reveal (minutes to
-hours later), the commitment becomes permanently unrevealable. This module
-persists it to disk so a process restart doesn't forfeit a pending bid.
+The contract stores only the hash of a committed bid; the amount and nonce needed
+to reveal it exist only with the provider. They are written to disk, so a process
+restart between commit and reveal does not forfeit the bid.
 """
 
 import json
@@ -65,8 +63,10 @@ class CommitmentStore:
         effort_tier: Optional[str] = None,
         committed_at: Optional[str] = None,
     ) -> None:
-        """Persist a pending commitment. Must be called BEFORE the commitBid tx is sent,
-        so a crash right after broadcast still leaves the nonce recoverable on disk."""
+        """Persist a pending commitment, before the commitBid transaction is sent.
+
+        A crash right after broadcast then still leaves the nonce on disk.
+        """
         from datetime import datetime
 
         self._data[str(int(auction_id))] = {

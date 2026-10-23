@@ -4,9 +4,9 @@ import json
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
-# Mirrors blockchain_handler.SCORE_PRECISION — the fixed-point denominator used to
-# compute bid_component = (max_price - bid) * SCORE_PRECISION // max_price.
-# One score unit per auction requires a bid change of max_price // SCORE_PRECISION micro-USDC.
+# Mirrors blockchain_handler.SCORE_PRECISION, the fixed-point denominator of
+# bid_component = (max_price - bid) * SCORE_PRECISION // max_price: one score unit
+# per auction needs a bid change of max_price // SCORE_PRECISION micro-USDC.
 _SCORE_PRECISION = 10_000
 
 
@@ -60,10 +60,10 @@ def _build_auctions_context(agent_state: Dict[str, Any]) -> str:
 
 
 def _build_outcome_history_block(agent_state: Dict[str, Any]) -> str:
-    """Render the agent's own decision->outcome record (R1 episodic memory).
+    """Render the agent's own record of decisions and outcomes (LLM-History, LLM-Reflect).
 
-    Returns "" when the feature is off, so the prompt is byte-identical to R0. When on but
-    empty, says so explicitly rather than showing an empty table.
+    Returns "" when the feature is off, so the prompt is unchanged. When on but empty,
+    it says so rather than showing an empty table.
     """
     if "llm_outcome_history" not in agent_state:
         return ""
@@ -111,9 +111,9 @@ def _build_outcome_history_block(agent_state: Dict[str, Any]) -> str:
 
 
 def _build_strategy_memo_block(agent_state: Dict[str, Any]) -> str:
-    """Render the agent's self-edited strategy memo (R2 reflection).
+    """Render the strategy memo the agent writes and revises itself (LLM-Reflect).
 
-    Returns "" when the feature is off, so the prompt is unchanged for R0/R1.
+    Returns "" when the feature is off, so the prompt is unchanged.
     """
     if "llm_strategy_memo" not in agent_state:
         return ""
@@ -137,7 +137,7 @@ def _build_core_prompt(agent_state: Dict[str, Any]) -> str:
     feedback_count = (agent_state.get("agent_reputation") or {}).get("feedback_count")
     competitor_reps = agent_state.get("competitors_reputation", [])
 
-    # --- state (visibility) block ---
+    # --- State block ---
     state_lines = [
         f"- your_reputation: {rep} (feedback_count: {feedback_count})",
         f"- competitor_reputations: {competitor_reps}",
@@ -180,7 +180,7 @@ def _build_core_prompt(agent_state: Dict[str, Any]) -> str:
 
     auctions_block = _build_auctions_context(agent_state)
 
-    # --- per-level objective + action text ---
+    # --- Objective and rules ---
     objective_lines = ["- Winning earns your bid minus your execution and overhead cost. "
     "- You are providing agentic service so think about appropriate margin for such a service."]
     objective_lines.append(

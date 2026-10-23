@@ -1,28 +1,18 @@
-"""Helpers for querying the ERC-8004 Reputation Registry's decimal-precision getSummary.
+"""Read an agent's reputation from the ERC-8004 Reputation Registry, with its decimal precision.
 
-The v2 registry (erc-8004/erc-8004-contracts) represents feedback as fixed-point
-(value, valueDecimals) pairs rather than a plain 0-100 integer, and reverts
-getSummary() outright when given an empty clientAddresses array. Every caller
-needs the same two-step dance: enumerate clients via getClients(), then only call
-getSummary() when that list is non-empty. This module centralizes that logic so
-it isn't re-implemented (and re-risked) at each call site.
+The registry stores feedback as fixed-point (value, valueDecimals) pairs and
+reverts getSummary() when given an empty list of clients, so the clients are
+read with getClients() first and getSummary() is called only when there are any.
 """
 
 from typing import Tuple
 
 
 def fetch_reputation_summary(contract, agent_id: int) -> Tuple[int, int, int]:
-    """Fetch an agent's aggregated reputation, preserving decimal precision.
+    """Return ``(feedback_count, reputation_value, reputation_decimals)`` for an agent.
 
-    Args:
-        contract: A web3 Contract instance for the ReputationRegistry (sync .call()).
-        agent_id: The agent token ID to look up.
-
-    Returns:
-        (feedback_count, reputation_value, reputation_decimals). reputation_value is
-        the raw fixed-point integer; divide by 10**reputation_decimals for the real
-        number (see reputation_to_float). All three are 0 when the agent has no
-        feedback yet.
+    ``reputation_value`` is the raw fixed-point integer (see :func:`reputation_to_float`).
+    All three are 0 when the agent has no feedback yet.
     """
     clients = contract.functions.getClients(agent_id).call()
     if not clients:

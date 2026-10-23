@@ -1,4 +1,4 @@
-"""Blockchain client for interacting with smart contracts."""
+"""Asynchronous client for the chain: contract calls, transactions, receipts and events."""
 
 import asyncio
 import logging
@@ -8,15 +8,9 @@ from web3 import AsyncWeb3
 from eth_account import Account
 from eth_utils import to_checksum_address
 
-# web3.py's AsyncHTTPProvider defaults to a 30s per-request HTTP timeout
-# (DEFAULT_HTTP_TIMEOUT). aiohttp.ServerTimeoutError is a subclass of
-# asyncio.TimeoutError, and wait_for_transaction_receipt's outer
-# asyncio.wait_for(..., timeout=...) only catches asyncio.TimeoutError to
-# raise TimeExhausted - so a single slow HTTP poll past 30s gets misreported
-# as "not in the chain after {timeout} seconds" even when the real elapsed
-# time is far short of that. Raising the per-request timeout well past
-# observed local-node latency spikes lets a single slow poll succeed instead
-# of prematurely aborting the whole wait.
+# Per-request HTTP timeout. web3's default of 30 s misreports a single slow poll
+# of wait_for_transaction_receipt as "not in the chain after <timeout> seconds",
+# because aiohttp's timeout is an asyncio.TimeoutError.
 HTTP_REQUEST_TIMEOUT_SECONDS = 90
 
 try:
@@ -29,15 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class BlockchainClient:
-    """
-    Asynchronous blockchain client for interacting with Ethereum-compatible networks.
-    
-    Provides methods for:
-    - Contract interaction
-    - Transaction management
-    - Event monitoring
-    - Account management
-    """
+    """Asynchronous web3 client with retries on transient RPC failures."""
     
     def __init__(self, blockchain_config = None):
         self.config = blockchain_config or config
@@ -47,22 +33,19 @@ class BlockchainClient:
         self._initialized = False
     
     async def __aenter__(self):
-        """Async context manager entry."""
         await self._initialize()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
         await self.close()
         return False
     
     async def _initialize(self):
-        """Initialize the blockchain connection."""
+        """Connect to the RPC endpoint and set up the account, if a key is given."""
         if self._initialized:
             return
         
         try:
-            # Create Web3 instance
             self.w3 = AsyncWeb3(
                 AsyncWeb3.AsyncHTTPProvider(
                     self.config.rpc_url,
@@ -70,12 +53,10 @@ class BlockchainClient:
                 )
             )
                        
-            # Set up account if private key is provided
             if self.config.private_key:
                 self.account = Account.from_key(self.config.private_key)
                 logger.info(f"Initialized account: {self.account.address}")
             
-            # Verify connection
             if await self.is_connected():
                 chain_id = await self.w3.eth.chain_id
                 logger.info(f"Connected to blockchain - Chain ID: {chain_id}")
@@ -88,7 +69,6 @@ class BlockchainClient:
             raise
     
     async def is_connected(self) -> bool:
-        """Check if connected to the blockchain."""
         try:
             if not self.w3:
                 return False
@@ -98,7 +78,7 @@ class BlockchainClient:
             return False
     
     async def get_balance(self, address: Optional[str] = None) -> int:
-        """Get ETH/native token balance for an address."""
+        """Native-token balance of an address, in wei."""
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
         
@@ -110,11 +90,10 @@ class BlockchainClient:
         return balance
     
     async def get_gas_price(self) -> int:
-        """Get current gas price."""
+        """The configured gas price, or the node's."""
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
         
-        # Use configured gas_price if available
         gas_price = getattr(self.config, 'gas_price', None)
         if gas_price:
             return gas_price
@@ -122,7 +101,6 @@ class BlockchainClient:
         return await self.w3.eth.gas_price
     
     async def load_contract(self, name: str, address: str, abi: List[Dict]) -> Any:
-        """Load a smart contract."""
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
         
@@ -142,12 +120,9 @@ class BlockchainClient:
         *args,
         **kwargs
     ) -> Any:
-        """Call a read-only contract method.
+        """Call a read-only contract method, retrying transient failures.
 
-        Retried on failure since a `.call()` has no side effects — forked RPC
-        endpoints occasionally fail to fetch a storage slot from the upstream chain
-        for a transient reason, and this is the most frequently hit read path in the
-        whole client.
+        A ``.call()`` has no side effects, so retrying is safe.
         """
         if contract_name not in self.contracts:
             raise ValueError(f"Contract {contract_name} not loaded")
@@ -183,7 +158,7 @@ class BlockchainClient:
         gas_price: Optional[int] = None,
         **kwargs
     ) -> str:
-        """Send a transaction to a contract method."""
+        """Build, sign and send a transaction to a contract method, retrying nonce races."""
         if not self.account:
             raise RuntimeError("No account configured for sending transactions")
         
@@ -196,11 +171,10 @@ class BlockchainClient:
         contract = self.contracts[contract_name]
         method = getattr(contract.functions, method_name)
 
-        # Retry nonce-related races (common when same key is used across processes)
+        # Nonce races are common when one key is used by several processes.
         last_error = None
         for attempt in range(3):
             try:
-                # Build transaction
                 transaction = await method(*args, **kwargs).build_transaction({
                     'from': self.account.address,
                     'value': value,
@@ -210,10 +184,8 @@ class BlockchainClient:
                     'chainId': self.config.chain_id,
                 })
 
-                # Sign transaction
                 signed_txn = self.account.sign_transaction(transaction)
 
-                # Send transaction
                 tx_hash = await self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
 
                 logger.info(f"Sent transaction: {tx_hash.hex()}")
@@ -230,14 +202,9 @@ class BlockchainClient:
         raise last_error
     
     async def wait_for_transaction(self, tx_hash: str, timeout: int = 120) -> Dict[str, Any]:
-        """Wait for transaction confirmation.
+        """Wait for a transaction's receipt, retrying transient RPC errors.
 
-        The transaction was already broadcast before this is called, so retrying the
-        wait itself (not resubmitting) is safe. Forked RPC endpoints occasionally hit
-        a transient upstream error while proxying to the real chain (e.g. an Infura
-        request timeout surfaced as a "Fork Error: Transport(...)" JSON-RPC error) —
-        a single such blip during one poll shouldn't abort the whole wait when the
-        transaction has very likely already confirmed.
+        The transaction is already broadcast, so retrying the wait (not the send) is safe.
         """
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
@@ -277,7 +244,7 @@ class BlockchainClient:
         to_block: Union[int, str] = 'latest',
         filters: Optional[Dict] = None
     ) -> List[Dict]:
-        """Get contract events using eth_getLogs."""
+        """Contract events in a block range, via eth_getLogs."""
         if contract_name not in self.contracts:
             raise ValueError(f"Contract {contract_name} not loaded")
         
@@ -287,7 +254,6 @@ class BlockchainClient:
         contract = self.contracts[contract_name]
         event = getattr(contract.events, event_name)
         
-        # Use get_logs instead of create_filter for async web3
         logs = await event.get_logs(
             from_block=from_block,
             to_block=to_block,
@@ -304,13 +270,7 @@ class BlockchainClient:
         value: int = 0,
         **kwargs
     ) -> int:
-        """Estimate gas for a transaction.
-
-        This is a read-only simulation (no state mutation), so retrying it is always
-        safe. Forked RPC endpoints occasionally fail to fetch a storage slot from the
-        upstream chain for a transient reason (e.g. "failed to get storage for ...:
-        Internal error") — a single such blip shouldn't abort the whole call.
-        """
+        """Estimate a transaction's gas, retrying transient failures (a read-only simulation)."""
         if not self.account:
             raise RuntimeError("No account configured")
 
@@ -345,7 +305,6 @@ class BlockchainClient:
         raise last_error
     
     async def get_block(self, block_identifier: Union[int, str] = 'latest') -> Dict[str, Any]:
-        """Get block information."""
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
         
@@ -353,14 +312,12 @@ class BlockchainClient:
         return dict(block)
     
     async def get_block_number(self) -> int:
-        """Get the current block number."""
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
         
         return await self.w3.eth.block_number
     
     async def get_transaction(self, tx_hash: str) -> Dict[str, Any]:
-        """Get transaction information."""
         if not self.w3:
             raise RuntimeError("Blockchain client not initialized")
         
@@ -368,7 +325,6 @@ class BlockchainClient:
         return dict(tx)
     
     async def close(self):
-        """Close the blockchain client and release resources."""
         if self.w3 and self.w3.provider:
             try:
                 await self.w3.provider.disconnect()

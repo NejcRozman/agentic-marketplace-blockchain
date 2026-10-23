@@ -25,7 +25,7 @@ def _find(model_id: str):
 
 
 def is_pinned_model(model_id: str) -> bool:
-    """Whether this model's sampling was pinned by the estimation protocol."""
+    """Whether this model has a pinned sampling block."""
     return _find(model_id) is not None
 
 
