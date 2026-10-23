@@ -1,25 +1,15 @@
 #!/usr/bin/env python3
 """Build the chain snapshot the runs start from: Sepolia's ERC-8004 registries, forked once.
 
-This script forks Sepolia once (it needs an Infura key), drives the ordinary
-setup so that every account and contract the experiment touches is pulled into
-local state, above all the two ERC-8004 registries, and dumps the result. Runs
-then start with ``--load-state`` and no ``--fork-url``, which makes them:
+Forks Sepolia once (this needs an Infura key), runs the ordinary setup so that every
+account and contract a run touches, above all the two ERC-8004 registries, is
+pulled into local state, and dumps the result. Runs then start with
+``--load-state`` and no ``--fork-url``: they make no external RPC calls and start
+from byte-identical state. The registries in the snapshot are the real Sepolia
+contracts, with their code and storage.
 
-* **offline** — zero external RPC calls on the run path, so Infura cannot
-  throttle, rate-limit or fail a confirmatory run;
-* **identical** — every run begins from the same bytes, which is stronger than
-  pinning a block number: the snapshot *is* the state rather than a recipe for
-  fetching it;
-* **faster to start** — no fork handshake, and Anvil serves from memory.
-
-The ERC-8004 claim is unaffected. The registries in the snapshot are the real
-Sepolia contracts, captured with their real code and storage; nothing is
-reimplemented or stubbed.
-
-**Where it stops matters.** Setup runs through deploy, funding and agent
-registration, and then stops. If it ran auctions, their reputation and cost
-history would be baked into the starting state of every run.
+Setup stops after deployment, funding and agent registration; running auctions
+would bake their reputation and cost history into every run's starting state.
 
 Usage, with a condition config from which ``blockchain.state_snapshot`` is removed
 (a snapshot is not built from a snapshot)::
@@ -58,11 +48,8 @@ logger = logging.getLogger("build_chain_snapshot")
 
 DEFAULT_OUTPUT = REPO_ROOT / "experiments" / "chain" / "sepolia_registries.json"
 
-#: ERC-1967 implementation slot. Both ERC-8004 registries are proxies: the
-#: address in config holds ~130 bytes of forwarding code and the actual logic
-#: lives in a separate implementation contract. Fetching only the proxy gives a
-#: chain where every registry call reverts, so the implementations have to be
-#: pulled in too.
+#: ERC-1967 implementation slot. Both ERC-8004 registries are proxies whose
+#: logic lives in a separate implementation contract, which must be pulled in too.
 ERC1967_IMPLEMENTATION_SLOT = (
     "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 )
@@ -97,12 +84,9 @@ def encoded_uint(value: int) -> str:
     return f"{value:064x}"
 
 
-#: A read-only entry point per registry, used both to pull the contract into
-#: local state and to prove offline that it still works. Both were chosen
-#: because their return value is checkable, and because the deployed
-#: implementations actually have them: ``exists()`` and ``totalSupply()`` are in
-#: this repo's ``IIdentityRegistry`` but revert on the contract deployed at the
-#: configured address, so the interface here is not a safe guide to the ABI.
+#: A read-only entry point per registry, used to pull the contract into local
+#: state and to check offline that it works. ``exists()`` and ``totalSupply()``
+#: from this repository's ``IIdentityRegistry`` revert on the deployed contract.
 PROBE_CALLS = {
     "identity_registry": "ownerOf(uint256)",
     "reputation_registry": "getIdentityRegistry()",
@@ -112,22 +96,14 @@ PROBE_CALLS = {
 def prefetch_registries(
     url: str, registries: Mapping[str, str], known_agent_id: int
 ) -> Dict[str, str]:
-    """Pull the registries *and what they delegate to* into local state.
+    """Pull the registries and their implementations into local state; return proxy -> implementation.
 
-    Anvil fetches fork state lazily, so an account nobody touched is simply
-    absent from the dump. Setup registers agents, which exercises the identity
-    registry — but nothing touches the reputation registry until the first
-    feedback submission, and that happens during auctions, after this script
-    deliberately stops.
-
-    **The prefetch has to be a transaction, not a call.** Measured on this
-    fork: ``eth_getCode`` and ``eth_getStorageAt`` leave nothing in the dump,
-    and ``anvil_setBalance`` captures the code but *not* the storage — which is
-    worse than useless for a proxy, because the ERC-1967 implementation pointer
-    lives in storage. A transaction that executes a view function captures the
-    code, the pointer, and the implementation account together.
-
-    Returns proxy -> implementation for the manifest.
+    Anvil fetches fork state lazily, and nothing touches the reputation registry before
+    the first feedback, during the auctions. The prefetch must be a transaction: on this
+    fork ``eth_getCode`` and ``eth_getStorageAt`` leave nothing in the dump, and
+    ``anvil_setBalance`` captures code but not the storage that holds the ERC-1967
+    implementation pointer. A transaction executing a view function captures the code,
+    the pointer and the implementation together.
     """
     accounts = rpc(url, "eth_accounts", [])
     sender = accounts[0]
@@ -160,9 +136,8 @@ def prefetch_registries(
         )
         implementations[address] = implementation
 
-    # The node mines on a timer, so a sent transaction has not executed yet and
-    # a dump taken now would contain none of what it touches. This is exactly
-    # how the first build came out empty.
+    # The node mines on a timer, so a sent transaction has not executed yet and a
+    # dump taken now would contain none of what it touches.
     wait_for_receipts(url, pending)
     return implementations
 
@@ -190,17 +165,12 @@ def verify_snapshot(
     known_agent_id: int,
     port: int = 8599,
 ) -> None:
-    """Load the snapshot offline and prove the registries actually work.
+    """Load the snapshot offline and check that the registries work.
 
-    Code presence alone is not enough: a proxy whose code was captured without
-    its storage delegates to address zero, so every call reverts while
-    ``eth_getCode`` looks healthy. The functional check below is the one that
-    would have caught that — ``getIdentityRegistry()`` must come back with the
-    identity registry's address, which means the proxy resolved its
-    implementation and read its own storage, entirely offline.
-
-    Without this the failure surfaces mid-run, hours in. The check costs seconds
-    and turns a landmine into a build error.
+    Code presence is not enough: a proxy captured without its storage delegates to
+    address zero, so every call reverts. ``getIdentityRegistry()`` must return the
+    identity registry's address, which requires the proxy to resolve its
+    implementation and read its own storage offline.
     """
     logger.info("=== Verifying snapshot offline (no fork) ===")
     process = subprocess.Popen(
@@ -268,7 +238,7 @@ def verify_snapshot(
 
 
 async def build(config_path: Path, output: Path, run_index: int) -> Path:
-    """Fork, set up, dump. Returns the snapshot path."""
+    """Fork, set up and dump; return the snapshot path."""
     runner = ExperimentRunner(config_path, run_index=run_index)
     runner.load_config()
 
@@ -350,13 +320,10 @@ async def build(config_path: Path, output: Path, run_index: int) -> Path:
         "fork_network": runner.config["blockchain"]["fork_network"],
         "fork_block_number": runner.fork_block_number,
         "dumped_at_chain_id": runner.chain_id,
-        # Recorded because these are what the setup produced; a run loading the
-        # snapshot redeploys its own, so these are provenance, not addresses to
-        # reuse.
+        # Provenance only: a run loading the snapshot deploys its own contracts.
         "identity_registry": registries["identity_registry"],
         "reputation_registry": registries["reputation_registry"],
-        # Both registries are ERC-1967 proxies; these are the contracts their
-        # calls actually execute, and the snapshot is useless without them.
+        # The implementations behind the two ERC-1967 registry proxies.
         "erc1967_implementations": implementations,
         "verification_agent_id": known_agent_id,
         "verified_offline": True,

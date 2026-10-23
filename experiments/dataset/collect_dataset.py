@@ -68,18 +68,10 @@ DEFAULT_QUALITY_CRITERIA = {
 def usage_columns(exec_result: Mapping[str, Any]) -> Dict[str, Any]:
     """Flatten per-prompt execution usage into top-level dataset columns.
 
-    Dataset v3's reason for existing: how much digging each prompt actually
-    took. ``service_output`` already carries these nested inside the executor
-    result, but every analysis reads top-level columns, and a field nobody can
-    find is a field nobody uses.
-
-    ``retrieval_rounds_measured`` is False when *any* prompt's usage was not
-    observed — the recursion-limit fallback returns no graph state — so a
-    consumer can drop partial rows rather than trust a total that silently
-    omits the hardest prompt in the job. For the same reason unmeasured prompts
-    appear as ``None`` in the per-prompt lists rather than 0: a silent zero is
-    indistinguishable from "needed no digging" and would poison a regression
-    fitted on it.
+    ``retrieval_rounds_measured`` is False when any prompt's usage was not observed
+    (the recursion-limit fallback returns no graph state), and unmeasured prompts
+    appear as ``None`` rather than 0, so partial rows can be dropped instead of read
+    as needing no retrieval.
     """
     responses = list(exec_result.get("responses") or [])
     measured = bool(responses) and all(
@@ -118,20 +110,16 @@ class ExecutorTierDatasetConfig:
     prompt_char_tolerance: float = 0.15
     prompt_generation_max_attempts: int = 3
     reuse_requirements_from: Optional[str] = None
-    # The effort budget each tier buys. Carried in the collection config so a
-    # run reproduces without environment variables — the executor reads the module
-    # singleton, so forgetting them silently reverts to the design's caps.
+    # The effort budget each tier buys, carried in the collection config so a run
+    # reproduces without environment variables.
     effort_budget: Optional[Dict[str, Dict[str, int]]] = None
-    #: Generate and persist requirements, then stop. Execution is the
-    #: whole cost and runtime; separating it buys the chance to read the requirements
-    #: before paying to execute them.
+    #: Generate and persist the requirements, then stop, so they can be read before
+    #: paying to execute them.
     requirements_only: bool = False
 
 
-#: Requirement metadata the plan carries through to `requirements.jsonl`, so the
-#: designed depth of every request stays attached to its records.
-#: The retrieval caps the plan's depth ladder is graded to. Runtime values are
-#: environment-overridable; when they differ, the collection says so.
+#: The retrieval caps the plan's depth ladder is graded to. Runtime values can be
+#: overridden from the environment; the collection warns when they differ.
 DESIGN_RETRIEVAL_CAPS = {"low": 1, "medium": 3, "high": 10}
 
 
@@ -223,11 +211,11 @@ class ExecutorTierDatasetCollector:
 
     @staticmethod
     def _quality_criteria_for_depth(depth: str, multi_paper: bool) -> Dict[str, str]:
-        """The criteria a consumer asking *this* task would actually state.
+        """The criteria a consumer asking this task would state, recorded per requirement.
 
-        Synthesis is asked for only where the task demands it (contrast, reconcile),
-        and lookups are judged on precision rather than elaboration, so a correct
-        one-line answer is not penalised. The criteria are recorded per requirement.
+        Synthesis is asked for only where the task demands it (contrast, reconcile), and
+        lookups are judged on precision rather than elaboration, so a correct one-line
+        answer is not penalised.
         """
         evidence_noun = "papers" if multi_paper else "paper"
         criteria = {
@@ -238,9 +226,8 @@ class ExecutorTierDatasetCollector:
         }
 
         if depth in {"locate", "enumerate"}:
-            # A correct answer to a lookup is one line. Judged on `depth` — "extensive
-            # explanation, multiple supporting arguments" — a right answer scores badly
-            # for being appropriately terse, which is what sank `locate` in the pilot.
+            # A correct answer to a lookup is one line, and judged on `depth` it would score
+            # badly for being terse.
             criteria["depth"] = (
                 "Precision: the exact detail requested is stated correctly, in the source's own "
                 "terms, with no padding or unrequested elaboration"
@@ -497,10 +484,9 @@ class ExecutorTierDatasetCollector:
     ) -> Dict[str, Any]:
         """The per-requirement design and realised-structure fields.
 
-        Designed values come from the plan; realized values are measured on the
-        prompts that were actually written, and the countable features are
-        computed with `estimation.dataset.mechanical_features` - the same code
-        the estimators use.
+        Designed values come from the plan; realised values are measured on the prompts
+        actually written, with the countable features computed by `mechanical_features`,
+        the same code the estimators use.
         """
         source_stems = [str(document) for document in slot.get("documents") or []]
         visible = VisibleRequirement(
@@ -589,9 +575,7 @@ class ExecutorTierDatasetCollector:
     def _load_reusable_requirements(self) -> Dict[str, Dict[str, Any]]:
         """Requirement text from an earlier collection, keyed by slot_id.
 
-        A cap sweep has to hold the task fixed: if every collection regenerates its
-        prompts, the difference between two cap settings is confounded with the
-        difference between two prompt sets.
+        Reusing the text holds the task fixed across collections.
         """
         if not self.cfg.reuse_requirements_from:
             return {}
@@ -612,13 +596,7 @@ class ExecutorTierDatasetCollector:
         return {str(r["slot_id"]): r for r in rows}
 
     def _resolve_models(self) -> Dict[str, Optional[str]]:
-        """The three models this collection ran on.
-
-        Recorded per collection because the models are the instrument: the judge's
-        discrimination is what lets the tier interaction show up in ratings at all,
-        and a dataset appended across a model change would silently mix two
-        instruments.
-        """
+        """The requester, executor and judge models this collection ran on, recorded per collection."""
         try:
             architecture = get_architecture(str(self.cfg.architecture))
             executor_model = self.runtime_config.service_llm_override or architecture.service_llm
@@ -633,11 +611,10 @@ class ExecutorTierDatasetCollector:
         }
 
     def _apply_effort_budget(self) -> None:
-        """Push the collection's effort budget onto the runtime config.
+        """Apply the collection's effort budget to the runtime config.
 
-        `ServiceExecutor` resolves its budget from the module-level config singleton,
-        so a budget expressed only in this collector would be ignored. Applying it to
-        both keeps the YAML the single source of truth for what a tier buys.
+        `ServiceExecutor` reads its budget from the module-level config singleton, so a
+        budget held only by this collector would be ignored.
         """
         budget = self.cfg.effort_budget
         if not budget:
@@ -648,8 +625,7 @@ class ExecutorTierDatasetCollector:
             "tool_calls": "service_max_tool_calls_by_effort",
             "retrieval_k": "service_retrieval_k_by_effort",
         }
-        # The tier may also name the model it runs, with its own prices so a
-        # cheaper subcontractor shows up as cheaper in the record.
+        # A tier may name its own model, with its own prices.
         for attribute, key in (("service_llm_by_effort", "model"), ("service_llm_prices_by_effort", "prices")):
             values = budget.get(key)
             if not values:
@@ -682,11 +658,10 @@ class ExecutorTierDatasetCollector:
         )
 
     def _resolve_effort_caps(self) -> Dict[str, Dict[str, int]]:
-        """The search budgets this collection ran under.
+        """The retrieval caps this collection ran under.
 
-        `{low: 1, medium: 3, high: 10}` is what the design's depth ladder is graded
-        to, but the caps are environment-overridable, so a re-tuned pilot must carry
-        its own values — the caps are part of what produced the numbers.
+        The design's depth ladder assumes `{low: 1, medium: 3, high: 10}`, but the caps can
+        be overridden from the environment, so each collection records its own.
         """
         return {
             "retrieval_rounds": {
@@ -713,7 +688,7 @@ class ExecutorTierDatasetCollector:
         return {tier: by_effort.get(tier) for tier in ("low", "medium", "high")}
 
     def _warn_on_effort_cap_drift(self) -> bool:
-        """Say so, loudly, when the caps no longer match the design's assumption."""
+        """Warn when the caps differ from the design's."""
         realized = self._resolve_effort_caps()["retrieval_rounds"]
         if realized == DESIGN_RETRIEVAL_CAPS:
             return False
@@ -891,10 +866,8 @@ class ExecutorTierDatasetCollector:
     def _summarize_depth_tiers(self, run_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rating and cost per (demanded depth x tier).
 
-        The design's claim is conditional, not marginal: quality should be flat
-        across tiers on `locate` and collapse at the low tier on `reconcile`. Pooled
-        tier means cannot show that, so the cross-tabulation is materialised here
-        rather than left for each consumer to re-derive.
+        Quality is expected to be flat across tiers on `locate` and to drop at the low tier
+        on `reconcile`; pooled tier means cannot show that.
         """
         grouped: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
         for row in run_records:
@@ -1200,8 +1173,7 @@ class ExecutorTierDatasetCollector:
 
             reused = reused_requirements.get(str(slot["slot_id"]))
             if reused is not None:
-                # Same task text, different execution conditions: the only way a cap
-                # sweep measures caps rather than prompt variation.
+                # Same task text, different execution conditions.
                 prompts = list((reused.get("requirements") or {}).get("prompts") or [])
                 prompt_generation = reused.get("prompt_generation")
                 plan_metadata = {
@@ -1411,8 +1383,7 @@ class ExecutorTierDatasetCollector:
                         "evaluator_quality_scores": evaluator_payload.get("quality_scores", {}),
                         "evaluator_error": evaluator_payload.get("error"),
                         "evaluator_duration_seconds": float(evaluator_payload.get("duration_seconds", 0.0)),
-                        # Consumer-side spend per run: the judge makes prompt_count+1
-                        # calls, so it is a real cost line.
+                        # The judge's spend per run: prompt_count + 1 calls.
                         "evaluator_model": evaluator_payload.get("evaluator_model", evaluator_model),
                         "evaluator_llm_calls": int(evaluator_payload.get("evaluator_llm_calls", 0) or 0),
                         "evaluator_input_tokens": int(evaluator_payload.get("evaluator_input_tokens", 0) or 0),

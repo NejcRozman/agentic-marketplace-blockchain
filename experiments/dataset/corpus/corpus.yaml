@@ -1,33 +1,17 @@
-# Corpus v2 — pinned spec for the literature-analysis workload (S3 §0).
+# The paper corpus of the literature-analysis service, read by arxiv_corpus.py build.
 #
-# 30 papers, 6 areas, 12 clusters. arXiv ids carry explicit versions so
-# `build` reconstructs byte-identical PDFs on any future run.
+# 30 papers in 6 unrelated areas, each split into 2 clusters that share a subject,
+# so that cross-document synthesis within a cluster is meaningful. 9 conflict links
+# mark well-documented disputes between papers. arXiv ids carry explicit versions,
+# so `build` downloads the same PDFs on every run.
 #
-# Design, against S3 §0:
-#   - 20-30 papers .......... 30.
-#   - clusters of 3-5 ....... every area splits into 2 sub-clusters that share
-#                             a subject, so cross-document synthesis inside a
-#                             cluster is meaningful.
-#   - spread over >= 4 areas  6 areas. Blockchain sharding and recsys
-#                             reproducibility are genuinely unrelated, which is
-#                             what makes "these papers barely connect" a real
-#                             condition rather than a hypothetical.
-#   - some disagreeing pairs  9 conflict links, all well-documented disputes in
-#                             their fields rather than pairs that merely differ.
-#                             §0 says not to spend collection effort hunting
-#                             these; curating from known controversies costs
-#                             nothing extra, so they are recorded and available
-#                             for S4's deep-synthesis prompts.
+# `stem` is set explicitly on every paper: the executor shows it to the RAG as
+# `source_id` and the estimators see it in `source_pdf_names`, and the naming
+# heuristic would give near-identical stems to papers such as "Emergent Abilities
+# of Large Language Models" and "Are Emergent Abilities ... a Mirage?".
 #
-# `stem` is set explicitly on every paper. It is not cosmetic: the executor
-# hands it to the RAG as `source_id` and the estimation probe reads it as
-# `source_pdf_names`, so it is task information a real provider would see. The
-# filename-generating heuristic would collapse "Emergent Abilities of Large
-# Language Models" and "Are Emergent Abilities ... a Mirage?" onto near-identical
-# stems, erasing the one distinction that matters.
-#
-# `conflicts_with` references the pinned id as written below. Links are recorded
-# on one side of each pair; the manifest resolves them to stems.
+# `conflicts_with` names the pinned id as written below. Each link is recorded on
+# one side of its pair; the manifest resolves it to stems.
 
 corpus_id: v2
 source: arXiv

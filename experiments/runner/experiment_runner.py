@@ -1,15 +1,9 @@
-"""
-Experiment Runner - Orchestrates multi-agent simulation experiments.
+"""Runs one experiment: a local chain, the contracts, the agents and the metrics.
 
-Responsibilities:
-1. Load YAML experiment configuration
-2. Start Anvil blockchain with Sepolia fork
-3. Deploy contracts (ReverseAuction, Mock USDC)
-4. Register agents (consumer + providers)
-5. Spawn agent processes with appropriate configuration
-6. Monitor experiment progress and stopping criteria
-7. Collect metrics and logs
-8. Clean shutdown of all processes
+Starts Anvil from the chain snapshot (or a pinned fork), deploys the ReverseAuction
+and a mock USDC, registers the consumer and the providers, spawns them as processes,
+monitors the auctions until the target is reached, collects the metrics and shuts
+everything down.
 """
 
 import asyncio
@@ -34,12 +28,11 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
-# Add parent directory to path for absolute imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from experiments.runner.metrics_collector import MetricsCollector
 from agents.provider.estimation.llm_client import LIVE_CACHE_DIR
 
-# Load environment variables from agents/.env
+# API keys and endpoints come from agents/.env.
 AGENTS_DIR = Path(__file__).parent.parent.parent / "agents"
 ENV_FILE = AGENTS_DIR / ".env"
 if ENV_FILE.exists():
@@ -71,9 +64,7 @@ API_KEY_PREFIXES = ("sk-", "sk-ant-", "ghp_", "gho_", "xoxb-", "xoxp-", "AIza")
 def _fingerprint(value: str) -> str:
     """Stable, non-reversible tag for a redacted value.
 
-    Keeping a fingerprint rather than a bare '***' means two runs can still be
-    compared on whether they used the same account or key, which is the whole
-    point of recording the resolved config.
+    Unlike a bare '***', it still shows whether two runs used the same account or key.
     """
     return f"<redacted:sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:12]}>"
 
@@ -87,10 +78,8 @@ def _is_secret_value(value: Any) -> bool:
 def redact_secrets(value: Any, key_hint: str = "") -> Any:
     """Recursively replace secrets in a resolved config with fingerprints.
 
-    The resolved config is written into `experiment_metrics.json`, which is
-    committed. Environment substitution has already turned `${BLOCKCHAIN_PRIVATE_KEY}`
-    into a real key by this point, so storing it verbatim would publish live
-    private keys into git history.
+    The resolved config, with environment variables already substituted, is written
+    into `experiment_metrics.json`.
     """
     if isinstance(value, dict):
         return {k: redact_secrets(v, key_hint=str(k)) for k, v in value.items()}
@@ -116,10 +105,10 @@ def build_provenance(
     resolved_config: Dict[str, Any],
     runtime: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Capture what produced this run: code version, config identity, environment.
+    """Record what produced this run: code version, config identity and environment.
 
-    `git_dirty` is the gate for confirmatory analysis -- a run made from an
-    uncommitted working tree cannot be reproduced from its `git_sha` alone.
+    `git_dirty` marks a run made from an uncommitted working tree, which its `git_sha`
+    alone cannot reproduce.
     """
     sha = _git_output(["rev-parse", "HEAD"])
     porcelain = _git_output(["status", "--porcelain"])
@@ -141,9 +130,8 @@ def build_provenance(
         "run_seed": experiment_section.get("run_seed"),
         "llm_temperature": experiment_section.get("llm_temperature"),
         "llm_sampling_seed": experiment_section.get("llm_sampling_seed"),
-        # Where replayed answers would come from. Recorded so a run's
-        # provenance says which cache it could have been served from; the
-        # live/replayed split itself is the estimator's to report per run.
+        # Which cache replayed answers could come from; the live/replayed split is
+        # reported per run by the estimator.
         "llm_cache_dir": str(LIVE_CACHE_DIR),
         # Run isolation, resolved rather than configured: which port
         # and chain this run actually used, and the block its fork started from.
@@ -169,18 +157,14 @@ class ProcessHandle:
 
 class ExperimentRunner:
     """Orchestrates execution of simulation experiments."""
-    
+
     #: Concurrent runs are isolated by index. Port and chain id are both
     #: derived from it, so there is one input to get wrong instead of two.
     BASE_RPC_PORT = 8545
     BASE_CHAIN_ID = 8000
 
     def __init__(self, config_path: Path, run_index: int = 0, run_seed: Optional[int] = None):
-        """Initialize experiment runner with configuration.
-
-        ``run_index`` isolates one run from its neighbours: index 0 keeps the
-        historical port 8545, index 1 takes 8546, and so on.
-        """
+        """``run_index`` isolates concurrent runs: index 0 uses port 8545, index 1 port 8546, and so on."""
         self.config_path = config_path
         self.run_index = int(run_index)
         # One config serves every seed of its condition. Supplying the seed per run
@@ -189,40 +173,33 @@ class ExperimentRunner:
         self._run_seed_override = None if run_seed is None else int(run_seed)
         self.config: Dict[str, Any] = {}
         self.processes: List[ProcessHandle] = []
-        
-        # Runtime state
+
         self.anvil_process: Optional[ProcessHandle] = None
         self.agent_processes: List[ProcessHandle] = []
-        
-        # Deployed contract addresses
+
         self.reverse_auction_address: Optional[str] = None
         self.payment_token_address: Optional[str] = None
-        
-        # Registered agent IDs
+
         self.consumer_agent_id: Optional[int] = None
         self.provider_agent_ids: List[int] = []
-        self.provider_metadata: List[Dict[str, Any]] = []  # Track provider types and configs
-        
-        # Reproducibility
+        self.provider_metadata: List[Dict[str, Any]] = []
+
         self.run_seed: Optional[int] = None
         self._contracts_built = False
         self.llm_temperature: Optional[float] = None
         self.llm_sampling_seed: Optional[int] = None
 
-        # Experiment directories
         self.experiment_id: str = ""
         self.run_id: str = ""
         self.log_dir: Path = Path()
         self.metrics_dir: Path = Path()
 
-        # Status tracking
         self.start_time: Optional[datetime] = None
         self.consumer_status_file: Optional[Path] = None
         self.provider_status_files: Dict[int, Path] = {}
 
-        # Metrics collection
         self.metrics_collector: Optional[MetricsCollector] = None
-        self.phase_timings: Dict[str, float] = {}  # Track phase durations
+        self.phase_timings: Dict[str, float] = {}
 
     @property
     def jobs_dir(self) -> Path:
@@ -243,9 +220,8 @@ class ExperimentRunner:
     def rpc_url(self) -> str:
         """This run's RPC endpoint.
 
-        At index 0 the config's own ``rpc_url`` still wins, so every existing
-        config and every serial run behaves exactly as before. Any other index
-        must not read a hardcoded ``localhost:8545`` out of the YAML.
+        At index 0 the config's ``rpc_url`` is used; any other index must not read the
+        ``localhost:8545`` written in the YAML.
         """
         if self.run_index == 0:
             configured = (self.config.get('blockchain') or {}).get('rpc_url')
@@ -258,29 +234,21 @@ class ExperimentRunner:
         """This run's chain id.
 
         `forge script --broadcast` writes to
-        ``contracts/broadcast/<script>/<chainId>/run-latest.json``. Every run
-        forking Sepolia is chain 11155111, so concurrent deploys race on one
-        file — and a run can read the *other* run's contract addresses, which
-        produces plausible numbers from the wrong market. A distinct chain id
-        per run makes the path unique for free.
+        ``contracts/broadcast/<script>/<chainId>/run-latest.json``; with one chain id,
+        concurrent runs would race on that file and could read each other's contract
+        addresses.
         """
         return self.BASE_CHAIN_ID + self.run_index
 
     @property
     def fork_block_number(self) -> Optional[int]:
-        """Pinned fork height.
-
-        Unpinned, every run starts from Sepolia's current head — different
-        balances, block times and gas each time. Pinning makes the starting
-        chain state identical across runs *and* lets Anvil serve the fork from
-        cache instead of re-fetching per run.
-        """
+        """Pinned fork height, so every forked run starts from the same state, served from Anvil's cache."""
         raw = (self.config.get('blockchain') or {}).get('fork_block_number')
         return None if raw is None else int(raw)
 
     @staticmethod
     def _generate_run_id() -> str:
-        """Unique, sortable, collision-free identifier for a single run of a config."""
+        """Unique, sortable identifier for one run of a config."""
         timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
         suffix = uuid.uuid4().hex[:6]
         return f"{timestamp}-{suffix}"
@@ -474,28 +442,26 @@ class ExperimentRunner:
                 )
             )
         return profiles
-        
+
     def load_config(self):
         """Load and validate experiment configuration from YAML."""
         logger.info(f"Loading configuration from {self.config_path}")
-        
+
         with open(self.config_path, 'r') as f:
             config_text = f.read()
-        
-        # Substitute environment variables (${VAR_NAME} pattern)
+
+        # Substitute ${VAR_NAME} with the environment variable.
         def replace_env_var(match):
             var_name = match.group(1)
             value = os.getenv(var_name)
             if value is None:
                 raise ValueError(f"Environment variable {var_name} not found")
             return value
-        
+
         config_text = re.sub(r'\$\{(\w+)\}', replace_env_var, config_text)
-        
-        # Parse YAML
+
         self.config = yaml.safe_load(config_text)
-        
-        # Extract key configuration
+
         self.experiment_id = self.config['experiment']['id']
 
         # The run seed. One number per run; every agent derives its own
@@ -517,10 +483,8 @@ class ExperimentRunner:
         llm_sampling_seed_raw = self.config['experiment'].get('llm_sampling_seed')
         self.llm_sampling_seed = None if llm_sampling_seed_raw is None else int(llm_sampling_seed_raw)
 
-        # Setup experiment directories. Each invocation gets its own timestamped
-        # run directory nested under the experiment_id, so repeated runs of the
-        # same config (today, tomorrow, in a batch) accumulate side by side
-        # instead of overwriting each other.
+        # Each run gets its own timestamped directory under the experiment id, so
+        # repeated runs of a config do not overwrite each other.
         self.run_id = self._generate_run_id()
         self.log_dir = paths.RUN_LOGS_DIR / self.experiment_id / self.run_id
         # Start from an empty result directory: the consumer reads
@@ -536,7 +500,6 @@ class ExperimentRunner:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize MetricsCollector
         self.metrics_collector = MetricsCollector(
             experiment_id=self.experiment_id,
             metrics_dir=self.metrics_dir,
@@ -551,9 +514,7 @@ class ExperimentRunner:
                 "rpc_url": self.rpc_url,
                 "chain_id": self.chain_id,
                 "fork_block_number": self.fork_block_number,
-                # The snapshot *is* the starting chain state, so its hash is what
-                # makes a run attributable to a known chain rather than to
-                # "Sepolia, at some point".
+                # The snapshot is the starting chain state; its hash identifies it.
                 "state_snapshot": None if self.state_snapshot is None else str(self.state_snapshot),
                 "state_snapshot_sha256": self._state_snapshot_sha256(),
             },
@@ -573,21 +534,12 @@ class ExperimentRunner:
         logger.info(f"  Git SHA: {provenance.get('git_sha')} (dirty={provenance.get('git_dirty')})")
         logger.info(f"  Log directory: {self.log_dir}")
         logger.info(f"  Metrics directory: {self.metrics_dir}")
-    
+
     def cleanup_orphaned_processes(self):
         """Refuse to start if this run's port is already in use.
 
-        This used to `pkill anvil` and `pkill -f *_orchestrator.py` — pattern
-        kills that cannot tell this run's processes from a neighbour's, so
-        starting run N destroyed every other run in flight. Worse,
-        it failed silently: the run issuing the kill was fine, and the runs it
-        killed showed up as missing rows rather than an error.
-
-        Teardown never needed it. `cleanup()` kills this run's own process
-        groups by pid, and both Anvil and the agents are started with
-        `preexec_fn=os.setsid` so each group is its own. What is left here is
-        the one useful part — a check that nothing else already holds our port,
-        which is a real misconfiguration and should stop the run up front.
+        Processes are not killed by name, which would also hit concurrent runs; `cleanup()`
+        kills this run's own process groups by pid.
         """
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.settimeout(0.5)
@@ -603,13 +555,8 @@ class ExperimentRunner:
     def state_snapshot(self) -> Optional[Path]:
         """Local chain snapshot to start from instead of forking.
 
-        A snapshot is a full dump of a chain that was forked *once*, and is
-        offline thereafter. It removes Infura from the run path entirely rather
-        than merely reducing the call rate, and it makes every run start from
-        byte-identical state — stronger than pinning a block, which only fixes
-        the recipe for fetching that state.
-
-        Built by ``experiments/chain/build_chain_snapshot.py``.
+        A snapshot is a dump of a chain forked once: a run makes no external RPC calls and
+        starts from byte-identical state. Built by ``experiments/chain/build_chain_snapshot.py``.
         """
         raw = (self.config.get('blockchain') or {}).get('state_snapshot')
         if not raw:
@@ -624,18 +571,16 @@ class ExperimentRunner:
         return hashlib.sha256(snapshot.read_bytes()).hexdigest()
 
     def build_anvil_command(self) -> List[str]:
-        """Assemble Anvil's arguments. Extracted so the isolation flags are testable."""
+        """Assemble Anvil's command line."""
         cmd = [
             "anvil",
             "--host", "0.0.0.0",
-            # One port and one chain id per run. Without these
-            # every run binds 8545 and every run is chain 11155111, so
-            # concurrent runs share a blockchain and race on the same forge
-            # broadcast record.
+            # One port and one chain id per run, so concurrent runs share neither a chain
+            # nor a forge broadcast record.
             "--port", str(self.rpc_port),
             "--chain-id", str(self.chain_id),
-            "--accounts", "1",  # Only create 1 default account to minimize Infura requests
-            "--block-time", "1",  # Auto-mine every second so block.timestamp advances
+            "--accounts", "1",  # One default account, to limit fork RPC requests
+            "--block-time", "1",  # Mine every second so block.timestamp advances
         ]
 
         snapshot = self.state_snapshot
@@ -660,10 +605,8 @@ class ExperimentRunner:
 
         cmd += ["--fork-url", f"https://{fork_network}.infura.io/v3/{infura_key}"]
 
-        # Pin the fork height. Unpinned, each run starts from a different Sepolia
-        # head, which is not reproducible, and nothing is cached.
-        # Foundry caches fork state per block under ~/.foundry/cache/rpc/, so a
-        # pinned height is what lets the second and later runs read from disk.
+        # Pin the fork height, so the starting state is reproducible; Foundry caches
+        # fork state per block under ~/.foundry/cache/rpc/.
         if self.fork_block_number is not None:
             cmd += [
                 "--fork-block-number", str(self.fork_block_number),
@@ -690,12 +633,9 @@ class ExperimentRunner:
 
         logger.info(f"  RPC: {self.rpc_url} (chain id {self.chain_id})")
 
-        # Anvil takes its port on the command line and reads none of these
-        # variables, but it *inherits* them, and `/proc/<pid>/environ` is how
-        # the campaign identifies which chain a process belongs to. Left
-        # inherited, every slot's Anvil advertises the ambient default (8545)
-        # and a sweep for slot 0 matches all of them. Keep the environment
-        # honest so process introspection cannot be misled.
+        # Anvil reads none of these variables but inherits them, and the campaign
+        # identifies a process's chain from `/proc/<pid>/environ`, so set them to this
+        # run's values.
         anvil_env = {
             **os.environ,
             "BLOCKCHAIN_RPC_URL": self.rpc_url,
@@ -707,9 +647,9 @@ class ExperimentRunner:
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 env=anvil_env,
-                preexec_fn=os.setsid  # Create new process group for clean shutdown
+                preexec_fn=os.setsid  # Own process group, for a clean shutdown
             )
-        
+
         self.anvil_process = ProcessHandle(
             name="anvil",
             process=process,
@@ -717,21 +657,19 @@ class ExperimentRunner:
             pid=process.pid
         )
         self.processes.append(self.anvil_process)
-        
-        # Wait for Anvil to be ready - check if RPC is accepting connections
+
+        # Wait until the RPC answers.
         logger.info("Waiting for Anvil to initialize...")
-        max_wait = 30  # 30 seconds max
+        max_wait = 30
         for i in range(max_wait):
             await asyncio.sleep(1)
-            
-            # Check if Anvil process is still running
+
             if self.anvil_process.process.poll() is not None:
                 raise RuntimeError("Anvil process terminated unexpectedly")
-            
-            # Try to connect to RPC
+
             try:
                 result = subprocess.run(
-                    ["curl", "-s", "-X", "POST", 
+                    ["curl", "-s", "-X", "POST",
                      "-H", "Content-Type: application/json",
                      "--data", '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}',
                      self.rpc_url],
@@ -745,19 +683,16 @@ class ExperimentRunner:
                 pass
         else:
             raise RuntimeError("Anvil failed to start within 30 seconds")
-        
+
         logger.info(f"✓ Anvil started (PID: {self.anvil_process.pid})")
-        
-        # Reset nonce for the personal account to 0
-        # This is needed because forked accounts carry over their nonce from Sepolia
+
+        # Reset the deployer's nonce, which a forked account carries over from Sepolia.
         logger.info("Resetting account nonce...")
         personal_account = self.config['blockchain']['accounts']['main_account']
-        # Get address from private key
         from eth_account import Account
         account = Account.from_key(personal_account)
         address = account.address
-        
-        # Reset nonce to 0 using anvil_setNonce
+
         result = subprocess.run(
             ["curl", "-s", "-X", "POST",
              "-H", "Content-Type: application/json",
@@ -765,29 +700,14 @@ class ExperimentRunner:
              self.rpc_url],
             capture_output=True
         )
-        
+
         if result.returncode == 0:
             logger.info(f"✓ Reset nonce for {address}")
         else:
             logger.warning(f"Failed to reset nonce: {result.stderr.decode()}")
 
-        # No global commitment wipe. Each run now owns `<log_dir>/commitments`,
-        # created empty above, so there is nothing stale to clear — and the old
-        # sweep of the shared directory deleted the nonces of every run already
-        # in flight, which is how concurrent runs lost auction 1 and lost bids
-        # they had committed but could no longer reveal.
-
     def run_forge_script(self, script_name: str, env_vars: Dict[str, str]) -> str:
-        """
-        Run a forge script and return stdout.
-        
-        Args:
-            script_name: Name of the script file (e.g., "Deploy.s.sol")
-            env_vars: Additional environment variables to set
-        
-        Returns:
-            stdout from the script execution
-        """
+        """Run a forge script with extra environment variables and return its stdout."""
         logger.info(f"Running forge script: {script_name}")
 
         contracts_dir = Path(__file__).parent.parent.parent / "contracts"
@@ -795,11 +715,9 @@ class ExperimentRunner:
 
         self.build_contracts_once()
 
-        # Prepare environment
         env = os.environ.copy()
         env.update(env_vars)
 
-        # Run forge script
         result = subprocess.run(
             [
                 "forge", "script", str(script_path),
@@ -811,26 +729,20 @@ class ExperimentRunner:
             capture_output=True,
             text=True
         )
-        
+
         if result.returncode != 0:
             logger.error(f"Forge script failed:\n{result.stderr}")
             raise RuntimeError(f"Forge script {script_name} failed")
-        
+
         logger.info(f"✓ {script_name} executed successfully")
         return result.stdout
-    
+
     def build_contracts_once(self) -> None:
         """Compile the contracts, at most one process at a time.
 
-        `contracts/cache/` and `contracts/out/` are shared state. Eight runners
-        invoking `forge script` at once compile into the same directories and
-        corrupt each other's artifacts. Compiling up front under an exclusive
-        file lock means the first runner builds while the rest wait, and by the
-        time any `forge script` runs the artifacts are already there — so no
-        compilation ever happens concurrently.
-
-        The lock lives here rather than in the parallel launcher so a run
-        started by hand is protected too.
+        `contracts/cache/` and `contracts/out/` are shared, and concurrent compilations
+        corrupt each other's artifacts. Compiling up front under an exclusive file lock
+        means no `forge script` ever compiles, also for a run started by hand.
         """
         if self._contracts_built:
             return
@@ -858,63 +770,58 @@ class ExperimentRunner:
         self._contracts_built = True
 
     async def deploy_contracts(self):
-        """Deploy ReverseAuction and Mock USDC contracts."""
+        """Deploy the ReverseAuction and the mock USDC."""
         logger.info("Deploying contracts...")
-        
-        # Get deployer private key (using main account from config)
+
+        # The deployer is the config's main account.
         private_key = self.config['blockchain']['accounts']['deployer']
         await self._ensure_deployer_funded(private_key)
-        
+
         env_vars = {
             "PRIVATE_KEY": private_key,
             "IDENTITY_REGISTRY_ADDRESS": self.config['blockchain']['contracts']['identity_registry'],
             "REPUTATION_REGISTRY_ADDRESS": self.config['blockchain']['contracts']['reputation_registry'],
             "INITIAL_REPUTATION_DEFAULT": str(self.config['blockchain'].get('initial_reputation_default', 50))
         }
-        
-        # Run Deploy script
+
         output = self.run_forge_script("Deploy.s.sol", env_vars)
-        
-        # Parse deployed addresses from output
-        # Looking for: "Mock USDC deployed at: 0x..."
-        # and "ReverseAuction deployed at: 0x..."
+
+        # Parse the addresses from lines such as "Mock USDC deployed at: 0x...".
         usdc_match = re.search(r'Mock USDC deployed at:\s*(0x[a-fA-F0-9]+)', output)
         auction_match = re.search(r'ReverseAuction deployed at:\s*(0x[a-fA-F0-9]+)', output)
-        
+
         if not usdc_match or not auction_match:
             raise RuntimeError("Failed to parse contract addresses from deploy script output")
-        
+
         self.payment_token_address = usdc_match.group(1)
         self.reverse_auction_address = auction_match.group(1)
-        
+
         logger.info("✓ Contracts deployed:")
         logger.info(f"  Mock USDC: {self.payment_token_address}")
         logger.info(f"  ReverseAuction: {self.reverse_auction_address}")
-    
+
     async def fund_consumer_account(self):
-        """Fund consumer account with ETH and USDC if using a separate account."""
+        """Fund the consumer with ETH and USDC when it is a separate account."""
         logger.info("Checking if consumer needs funding...")
-        
+
         consumer_pk = self.config['blockchain']['accounts']['consumer']
         deployer_pk = self.config['blockchain']['accounts']['deployer']
-        
-        # Get consumer address
+
         from eth_account import Account
         consumer_address = Account.from_key(consumer_pk).address
         deployer_address = Account.from_key(deployer_pk).address
-        
-        # Check if consumer and deployer are different accounts
+
+        # Only when the consumer and the deployer are different accounts.
         if consumer_address.lower() == deployer_address.lower():
             logger.info("Consumer and deployer are the same account - no funding needed")
             return
-        
+
         logger.info(f"Funding consumer account: {consumer_address}")
-        
-        # Get funding amounts from config
+
         funding_config = self.config['blockchain']['accounts'].get('consumer_funding', {})
-        eth_amount = funding_config.get('eth_amount', 1000000000000000000)  # 1 ETH default
-        usdc_amount = funding_config.get('usdc_amount', 1000000000)  # 1000 USDC default
-        
+        eth_amount = funding_config.get('eth_amount', 1000000000000000000)  # 1 ETH
+        usdc_amount = funding_config.get('usdc_amount', 1000000000)  # 1000 USDC
+
         env_vars = {
             "DEPLOYER_PRIVATE_KEY": deployer_pk,
             "CONSUMER_ADDRESS": consumer_address,
@@ -922,14 +829,13 @@ class ExperimentRunner:
             "FUND_AMOUNT_ETH": str(eth_amount),
             "FUND_AMOUNT_USDC": str(usdc_amount)
         }
-        
-        # Run FundConsumer script
+
         self.run_forge_script("FundConsumer.s.sol", env_vars)
-        
+
         logger.info("✓ Consumer account funded")
         logger.info(f"  ETH: {eth_amount / 1e18} ETH")
         logger.info(f"  USDC: {usdc_amount / 1e6} USDC")
-    
+
     @staticmethod
     def _derive_provider_key(base_pk: str, index: int) -> str:
         """Return a deterministic unique private key derived from base_pk and provider index."""
@@ -941,9 +847,8 @@ class ExperimentRunner:
     async def _ensure_deployer_funded(self, private_key: str, minimum_wei: int = 10 ** 18) -> None:
         """Give a fresh deployer key enough ETH on the local chain to deploy and fund.
 
-        The experiments used a deployer whose Sepolia balance (3.95 ETH) is part of
-        the chain snapshot, so this step did not apply to them. A new key has no
-        balance in the snapshot and would fail to deploy without it.
+        The experiments' deployer already has a balance (3.95 ETH) in the chain snapshot;
+        a new key has none.
         """
         from eth_account import Account
         from web3 import Web3
@@ -955,15 +860,10 @@ class ExperimentRunner:
             logger.info(f"✓ Funded deployer {address} with 10 ETH for gas")
 
     async def _fund_address_eth(self, target_address: str, amount_wei: int = 10 ** 18) -> None:
-        """Set ETH balance on target_address using Anvil's anvil_setBalance debug RPC.
+        """Set an address's ETH balance with Anvil's `anvil_setBalance`.
 
-        This avoids depending on the source account having enough Sepolia ETH to cover
-        N×1 ETH transfers when many providers are derived from a single key.
-
-        Retries on transient RPC stalls (observed: local Anvil occasionally takes longer
-        than the client's read timeout to answer a request, even for a pure local state
-        write with no upstream fork dependency) instead of aborting the whole experiment
-        on a single slow response.
+        Retries when Anvil answers more slowly than the client's read timeout, instead of
+        aborting the run.
         """
         from web3 import Web3
 
@@ -986,50 +886,37 @@ class ExperimentRunner:
                 await asyncio.sleep(backoff_seconds)
 
     def register_agent(self, private_key: str) -> int:
-        """
-        Register an agent and return the agent ID.
-
-        Args:
-            private_key: Private key to use for registration
-
-        Returns:
-            Registered agent ID
-        """
+        """Register an agent with the given private key and return its agent id."""
         env_vars = {
             "PRIVATE_KEY": private_key,
             "IDENTITY_REGISTRY_ADDRESS": self.config['blockchain']['contracts']['identity_registry']
         }
-        
-        # Run RegisterAgent script
+
         output = self.run_forge_script("RegisterAgent.s.sol", env_vars)
-        
-        # Parse agent ID from output
-        # Looking for: "Agent ID: 1234"
+
+        # Parse the id from a line such as "Agent ID: 1234".
         match = re.search(r'Agent ID:\s*(\d+)', output)
-        
+
         if not match:
             raise RuntimeError("Failed to parse agent ID from registration output")
-        
+
         agent_id = int(match.group(1))
         logger.info(f"✓ Agent registered with ID: {agent_id}")
-        
+
         return agent_id
-    
+
     async def register_agents(self):
-        """Register consumer and provider agents."""
+        """Register the consumer and the providers."""
         logger.info("Registering agents...")
-        
-        # Register consumer
+
         consumer_pk = self.config['blockchain']['accounts']['consumer']
         self.consumer_agent_id = self.register_agent(consumer_pk)
         logger.info(f"Consumer agent ID: {self.consumer_agent_id}")
-        
-        # Register providers
+
         provider_pks = self.config['blockchain']['accounts']['providers']
         provider_config = self.config['agents']['providers']
         provider_plan = self._expand_provider_group_configs(provider_config)
 
-        # Providers for current experiment plan: provider_agent only
         provider_count = len(provider_plan)
         self.provider_metadata = []
 
@@ -1048,7 +935,7 @@ class ExperimentRunner:
             if i < len(provider_pks):
                 pk = provider_pks[i]
             else:
-                # Derive a unique key so this provider doesn't share a nonce with others
+                # Derive a unique key, so this provider has its own nonce.
                 pk = self._derive_provider_key(provider_pks[0], i)
                 from eth_account import Account as EthAccount
                 derived_addr = EthAccount.from_key(pk).address
@@ -1058,7 +945,6 @@ class ExperimentRunner:
             agent_id = self.register_agent(pk)
             self.provider_agent_ids.append(agent_id)
 
-            # Store metadata for spawning
             self.provider_metadata.append({
                 'agent_id': agent_id,
                 'private_key': pk,
@@ -1068,9 +954,9 @@ class ExperimentRunner:
             })
 
             logger.info(f"Provider {i+1} agent ID: {agent_id} ({plan_entry['group_name']})")
-        
+
         logger.info(f"✓ All agents registered ({len(self.provider_agent_ids)} providers)")
-    
+
     def spawn_agent_process(
         self,
         agent_type: str,
@@ -1078,23 +964,11 @@ class ExperimentRunner:
         private_key: str,
         additional_args: Dict[str, Any] = None
     ) -> ProcessHandle:
-        """
-        Spawn an agent process (consumer or provider).
-        
-        Args:
-            agent_type: "consumer" or "provider_agent"
-            agent_id: Agent ID to use
-            private_key: Blockchain private key
-            additional_args: Additional CLI arguments
-        
-        Returns:
-            ProcessHandle for the spawned process
-        """
+        """Spawn a consumer or provider process with the given agent id, key and CLI arguments."""
         logger.info(f"Spawning {agent_type} agent (ID: {agent_id})...")
-        
-        # Determine script path
+
         agents_dir = Path(__file__).parent.parent.parent / "agents"
-        
+
         if agent_type == "consumer":
             script = agents_dir / "consumer" / "consumer_orchestrator.py"
             status_file = self.log_dir / f"consumer_{agent_id}_status.json"
@@ -1103,8 +977,8 @@ class ExperimentRunner:
             script = agents_dir / "provider" / "orchestrator.py"
             status_file = self.log_dir / f"provider_{agent_id}_status.json"
             self.provider_status_files[agent_id] = status_file
-        
-        # Build command - use same Python interpreter as the runner (preserves venv)
+
+        # The runner's own interpreter, so the agents run in the same environment.
         cmd = [
             sys.executable, str(script),
             "--agent-id", str(agent_id),
@@ -1112,8 +986,7 @@ class ExperimentRunner:
             "--status-file", str(status_file),
             "--log-level", "INFO"
         ]
-        
-        # Add type-specific arguments
+
         if agent_type == "consumer" and additional_args:
             if 'eligible_providers' in additional_args:
                 cmd.extend(["--eligible-providers"] + [str(pid) for pid in additional_args['eligible_providers']])
@@ -1133,7 +1006,6 @@ class ExperimentRunner:
                 cmd.extend(["--check-interval", str(additional_args['check_interval'])])
             if 'check_interval_jitter' in additional_args:
                 cmd.extend(["--check-interval-jitter", str(additional_args['check_interval_jitter'])])
-            # Auto-auction arguments
             if 'auto_create_auction' in additional_args and additional_args['auto_create_auction']:
                 cmd.append("--auto-create-auction")
             if 'num_auctions' in additional_args:
@@ -1173,8 +1045,7 @@ class ExperimentRunner:
                 cmd.extend(["--heuristic-bid-tick-usd", str(additional_args['heuristic_bid_tick_usd'])])
             if 'heuristic_min_rebid_delta_usd' in additional_args:
                 cmd.extend(["--heuristic-min-rebid-delta-usd", str(additional_args['heuristic_min_rebid_delta_usd'])])
-        
-        # Setup environment variables
+
         env = os.environ.copy()
 
         # Every agent, consumer and provider alike, seeds its own RNG from this.
@@ -1201,13 +1072,12 @@ class ExperimentRunner:
                 env["SAMPLED_DATASET_SELECTION_SEED"] = str(additional_args['sampled_dataset_selection_seed'])
             if 'sampled_dataset_pass_limit' in additional_args:
                 env["SAMPLED_DATASET_PASS_LIMIT"] = str(additional_args['sampled_dataset_pass_limit'])
-        
-        # Add quality profile for providers if specified
+
         if agent_type == "provider_agent" and additional_args and 'quality_profile' in additional_args:
             env["QUALITY_PROFILE"] = additional_args['quality_profile']
             logger.info(f"Setting QUALITY_PROFILE={additional_args['quality_profile']} for provider {agent_id}")
 
-        # Provider reasoning configuration (also set in env for compatibility)
+        # Provider reasoning configuration, also set in the environment.
         if agent_type == "provider_agent" and additional_args:
             if 'group_name' in additional_args:
                 env["PROVIDER_GROUP_NAME"] = str(additional_args['group_name'])
@@ -1283,35 +1153,26 @@ class ExperimentRunner:
                 env["INITIAL_QUALITY_RATING_MEDIUM"] = str(additional_args['initial_quality_rating_medium'])
             if 'initial_quality_rating_high' in additional_args:
                 env["INITIAL_QUALITY_RATING_HIGH"] = str(additional_args['initial_quality_rating_high'])
-        
-        # Add project root to PYTHONPATH so agents can import from agents package
+
+        # Make the repository root importable for the agents.
         project_root = str(Path(__file__).parent.parent.parent)
         if "PYTHONPATH" in env:
             env["PYTHONPATH"] = f"{project_root}:{env['PYTHONPATH']}"
         else:
             env["PYTHONPATH"] = project_root
-        
+
         env.update({
-            # Results travel provider -> consumer through the filesystem at
-            # `<jobs>/auction_<id>/result.json`, keyed by auction id alone. A
-            # shared directory therefore lets concurrent runs — and even a later
-            # sequential run reading a stale file — evaluate another run's job.
-            # One run's agent was rated 42 on an execution belonging to a
-            # different run, which cost it nineteen auctions. Per-run directory,
-            # emptied at startup.
+            # Results pass from provider to consumer as `<jobs>/auction_<id>/result.json`,
+            # keyed by auction id alone; a shared directory lets a run evaluate another
+            # run's job.
             "AGENT_JOBS_DIR": str(self.jobs_dir),
-            # Commitments are keyed by agent id, and agent ids repeat across
-            # runs. Sharing the directory let one run read another's sealed bids
-            # (so it skipped auctions it believed it had already committed to)
-            # and let a starting run delete a live run's nonces (so a placed bid
-            # could never be revealed).
+            # Commitments are keyed by agent id, which repeats across runs; a shared
+            # directory lets runs read each other's sealed bids and delete each other's
+            # nonces.
             "AGENT_COMMITMENTS_DIR": str(self.commitments_dir),
             "BLOCKCHAIN_RPC_URL": self.rpc_url,
-            # Agents sign with `config.chain_id`
-            # (blockchain_client.py:210), which otherwise comes from
-            # `agents/.env`, where it is hardcoded to Sepolia's 11155111. Give
-            # each run its own chain id without exporting this and every
-            # transaction is signed for the wrong chain and rejected.
+            # Agents sign with `config.chain_id`, which otherwise comes from `agents/.env`
+            # (Sepolia, 11155111); without it every transaction is signed for the wrong chain.
             "BLOCKCHAIN_CHAIN_ID": str(self.chain_id),
             "BLOCKCHAIN_REVERSE_AUCTION_ADDRESS": self.reverse_auction_address,
             "BLOCKCHAIN_IDENTITY_REGISTRY_ADDRESS": self.config['blockchain']['contracts']['identity_registry'],
@@ -1321,16 +1182,14 @@ class ExperimentRunner:
             "BLOCKCHAIN_PRIVATE_KEY": private_key,
             "BLOCKCHAIN_AGENT_ID": str(agent_id),
             # The consumer's sampling seed is run_seed + CONSUMER_AGENT_ID (see
-            # Consumer.__init__). In all experiments this value came from the
-            # local agents/.env as 7430, not from the consumer's on-chain id;
-            # it is set here so that runs reproduce without that file.
+            # Consumer.__init__). In all experiments this was 7430, read from the local
+            # agents/.env; it is set here so that runs reproduce without that file.
             **({"CONSUMER_AGENT_ID": str(EXPERIMENT_CONSUMER_SEED_OFFSET)} if agent_type == "consumer" else {}),
             "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY", ""),
             "PINATA_API_KEY": os.getenv("PINATA_API_KEY", ""),
             "PINATA_API_SECRET": os.getenv("PINATA_API_SECRET", ""),
         })
-        
-        # Start process
+
         log_file = self.log_dir / f"{agent_type}_{agent_id}.log"
         with open(log_file, 'w') as f:
             process = subprocess.Popen(
@@ -1340,28 +1199,27 @@ class ExperimentRunner:
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid
             )
-        
+
         handle = ProcessHandle(
             name=f"{agent_type}_{agent_id}",
             process=process,
             log_file=log_file,
             pid=process.pid
         )
-        
+
         self.agent_processes.append(handle)
         self.processes.append(handle)
-        
+
         logger.info(f"✓ {agent_type.capitalize()} agent spawned (PID: {handle.pid})")
         return handle
-    
+
     async def spawn_agents(self):
-        """Spawn all consumer and provider agent processes."""
+        """Spawn the consumer and provider processes."""
         logger.info("Spawning agent processes...")
-        
-        # Spawn consumer
+
         consumer_config = self.config['agents']['consumer']
         consumer_pk = self.config['blockchain']['accounts']['consumer']
-        
+
         consumer_args = {
             'eligible_providers': self.provider_agent_ids,
             'max_budget': consumer_config['config']['max_budget'],
@@ -1371,8 +1229,7 @@ class ExperimentRunner:
             'check_interval': consumer_config['config']['check_interval'],
             'check_interval_jitter': consumer_config['config'].get('check_interval_jitter', 0.0),
         }
-        
-        # Add behavior config for auto-auction
+
         shared_sampled_dataset_args = {}
         if 'behavior' in consumer_config:
             behavior = consumer_config['behavior']
@@ -1399,8 +1256,8 @@ class ExperimentRunner:
                     consumer_args[key] = behavior[key]
                     shared_sampled_dataset_args[key] = behavior[key]
 
-            # Only pass pdfs_per_service when explicitly provided in YAML.
-            # Otherwise, let the consumer process use its Config/env default.
+            # Pass pdfs_per_service only when the YAML sets it; otherwise the consumer uses
+            # its own default.
             if 'pdfs_per_service' in behavior:
                 consumer_args['pdfs_per_service'] = behavior['pdfs_per_service']
             if 'service_generation_mode' in behavior:
@@ -1409,44 +1266,40 @@ class ExperimentRunner:
                 consumer_args['service_generation_iterations'] = behavior['service_generation_iterations']
             if 'service_generation_seed' in behavior:
                 consumer_args['service_generation_seed'] = behavior['service_generation_seed']
-            
-            # Add random provider selection if configured
-            # If eligible_per_auction is set, use registered provider_agent_ids as pool
+
+            # Each auction draws eligible_per_auction providers from the registered ones.
             if 'eligible_per_auction' in behavior:
                 consumer_args['provider_pool'] = self.provider_agent_ids
                 consumer_args['eligible_per_auction'] = behavior['eligible_per_auction']
                 logger.info(f"Random provider selection enabled: {behavior['eligible_per_auction']} from pool of {len(self.provider_agent_ids)}")
             elif 'provider_pool' in behavior:
-                # Fallback: use explicit provider_pool if specified (for backwards compatibility)
+                # Otherwise an explicit provider_pool from the config.
                 consumer_args['provider_pool'] = behavior['provider_pool']
                 if 'eligible_per_auction' in behavior:
                     consumer_args['eligible_per_auction'] = behavior['eligible_per_auction']
-        
+
         self.spawn_agent_process(
             "consumer",
             self.consumer_agent_id,
             consumer_pk,
             consumer_args
         )
-        
-        # Spawn providers using metadata from registration
+
         for provider_meta in self.provider_metadata:
             agent_id = provider_meta['agent_id']
             pk = provider_meta['private_key']
             group_name = provider_meta.get('group_name', 'default')
             group_config = provider_meta['group_config']
-            
-            # Build provider-specific args
+
             provider_args = {'group_name': group_name}
             if 'config' in group_config:
-                # Add quality profile if specified (for honest providers)
                 if 'quality_profile' in group_config['config']:
                     provider_args['quality_profile'] = group_config['config']['quality_profile']
 
             provider_behavior = group_config.get('behavior', {})
             provider_cfg = group_config.get('config', {})
 
-            # Routing for provider strategy selection (YAML-driven)
+            # Strategy selection, from the YAML.
             architecture = provider_behavior.get('architecture', provider_cfg.get('architecture'))
             reasoning_mode = provider_behavior.get('reasoning_mode', provider_cfg.get('reasoning_mode'))
             heuristic_strategy = provider_behavior.get('heuristic_strategy', provider_cfg.get('heuristic_strategy'))
@@ -1535,7 +1388,6 @@ class ExperimentRunner:
             if embedding_input_price_per_1k is not None:
                 provider_args['embedding_input_price_per_1k'] = embedding_input_price_per_1k
 
-            # Provider economic simulation parameters
             # The commit-window freshness gate, per run.
             bid_freshness_min_seconds = provider_cfg.get('bid_freshness_min_seconds')
             if bid_freshness_min_seconds is not None:
@@ -1594,26 +1446,21 @@ class ExperimentRunner:
                 f"blockchain_llm_model={provider_args.get('blockchain_llm_model', 'default')}, "
                 f"service_llm_model={provider_args.get('service_llm_model', 'default')}"
             )
-            
+
             self.spawn_agent_process(
                 "provider_agent",
                 agent_id,
                 pk,
                 provider_args
             )
-        
-        # Wait for agents to initialize
+
         logger.info("Waiting for agents to initialize...")
         await asyncio.sleep(3)
-        
+
         logger.info("✓ All agents spawned")
-    
+
     async def snapshot_reputations(self, after_auction_id: int):
-        """Capture reputation snapshot after an auction completes.
-        
-        Args:
-            after_auction_id: The auction ID that just completed
-        """
+        """Record every provider's reputation after auction ``after_auction_id`` completes."""
         try:
             from web3 import Web3
             from agents.common.contract_abis import get_reputation_registry_abi
@@ -1650,44 +1497,42 @@ class ExperimentRunner:
                     logger.info(f"   Provider {provider_id}: score={average_score}, feedback_count={feedback_count}")
                 except Exception as e:
                     logger.warning(f"   Failed to get reputation for provider {provider_id}: {e}")
-            
+
             if self.metrics_collector:
                 self.metrics_collector.metrics["reputation_evolution"].append(snapshot)
-                
+
         except Exception as e:
             logger.error(f"Failed to snapshot reputations: {e}", exc_info=True)
-    
+
     async def monitor_experiment(self):
-        """Monitor experiment progress and check stopping criteria."""
+        """Monitor the run until its stopping criteria are met."""
         logger.info("Monitoring experiment progress...")
-        
+
         flow = self.config['experiment_flow']
         stopping_criteria = flow['phases'][2]['stopping_criteria']
-        
+
         criteria_type = stopping_criteria['type']
-        # Use consumer's num_auctions as the target (single source of truth)
-        # Fall back to stopping_criteria['target'] for backwards compatibility
+        # The consumer's num_auctions is the target; stopping_criteria['target'] is the
+        # fallback.
         target = self.config['agents']['consumer']['behavior'].get('num_auctions', stopping_criteria.get('target', 1))
         poll_interval = stopping_criteria['poll_interval']
-    
+
         max_timeout = self.config['experiment'].get('duration_timeout', stopping_criteria.get('max_timeout', 7200))
-        
+
         logger.info(f"Stopping criteria: {criteria_type}, target={target} auctions, max_timeout={max_timeout}s ({max_timeout/3600:.1f}h)")
-        
-        # Track reputation snapshots
+
         reputation_snapshots_enabled = self.config['experiment_flow'].get('reputation_snapshots', {}).get('enabled', True)
         last_completed_count = 0
-        
+
         start_time = time.time()
 
-        # Track consumer process to detect early crashes/exits
         consumer_process = next(
             (p for p in self.agent_processes if p.name.startswith("consumer_")),
             None
         )
-        
+
         while True:
-            # If consumer exits unexpectedly, stop waiting immediately
+            # Stop at once if the consumer exits.
             if consumer_process and consumer_process.process.poll() is not None:
                 exit_code = consumer_process.process.returncode
                 logger.error(
@@ -1697,20 +1542,17 @@ class ExperimentRunner:
                 self.monitor_exit_reason = f"consumer_exited(code={exit_code})"
                 break
 
-            # Check timeout
             elapsed = time.time() - start_time
             if elapsed > max_timeout:
                 logger.info(f"Maximum timeout reached ({max_timeout}s = {max_timeout/3600:.1f}h)")
                 self.monitor_exit_reason = f"max_timeout({max_timeout}s)"
                 break
 
-            # Persist runtime status snapshots (consumer + provider financials/bidding/jobs).
+            # Persist the agents' runtime status snapshots.
             self._collect_runtime_status_snapshots()
-            
-            # Check stopping criteria
+
             if criteria_type == "completed_auctions":
                 try:
-                    # Read consumer status file
                     if self.consumer_status_file and self.consumer_status_file.exists():
                         with open(self.consumer_status_file, 'r') as f:
                             status = json.load(f)
@@ -1721,24 +1563,23 @@ class ExperimentRunner:
                                 status=status,
                                 source="runtime_status",
                             )
-                        
+
                         completed = status.get('completed_auctions', 0)
                         logger.info(f"Completed auctions: {completed}/{target} (elapsed: {int(elapsed)}s)")
-                        
-                        # Take reputation snapshot when a new auction completes
+
+                        # Snapshot reputations when a new auction completes.
                         if reputation_snapshots_enabled and completed > last_completed_count:
                             logger.info(f"📸 Taking reputation snapshot after auction {completed}...")
                             await self.snapshot_reputations(completed)
                             last_completed_count = completed
-                        
+
                         if completed >= target:
                             logger.info(f"✓ Target reached: {completed} auctions completed")
                             self.monitor_exit_reason = f"target_reached({completed}/{target})"
                             break
                 except Exception as e:
                     logger.debug(f"Error reading consumer status: {e}")
-            
-            # Wait before next check
+
             await asyncio.sleep(poll_interval)
 
         logger.info("Monitoring loop ended: %s", getattr(self, "monitor_exit_reason", "unknown"))
@@ -1752,17 +1593,9 @@ class ExperimentRunner:
     async def _drain_inflight_auctions(self, max_wait: float = 120.0) -> None:
         """Let auctions still in flight settle before the chain is torn down.
 
-        `cleanup()` kills Anvil as soon as monitoring returns. Auctions created
-        near the end were still in Commit/Reveal at that moment, so the consumer
-        never ended them, never evaluated them and never paid — every run
-        finished with `completed_auctions = 29` and one auction left `active`,
-        and the last auction's revenue was booked for neither arm. Both arms
-        lose it equally, so the paired difference survives, but the horizon is
-        29 auctions rather than the 30 the config asks for.
-
-        Bounded, and it only ever *adds* waiting: if nothing is in flight it
-        returns at once, and if an auction cannot settle the cap ends the wait
-        and the run proceeds exactly as it did before.
+        Without it, `cleanup()` killed Anvil while the last auction was still in Commit or
+        Reveal, so that auction was never evaluated or paid. The wait is bounded and
+        returns at once when nothing is in flight.
         """
         deadline = time.time() + max_wait
         last_active = None
@@ -1856,18 +1689,17 @@ class ExperimentRunner:
                 )
             except Exception as e:
                 logger.debug(f"Failed to collect runtime consumer status snapshot: {e}")
-    
+
     def collect_metrics(self):
-        """Collect comprehensive experiment metrics."""
+        """Collect the run's metrics from the chain and the agents' status files, and save them."""
         logger.info("="*80)
         logger.info("Collecting comprehensive experiment metrics...")
         logger.info("="*80)
-        
+
         if not self.metrics_collector:
             logger.error("MetricsCollector not initialized!")
             return
-        
-        # Set basic info
+
         self.metrics_collector.set_end_time(datetime.now())
         self.metrics_collector.set_contracts(
             reverse_auction=self.reverse_auction_address,
@@ -1883,39 +1715,36 @@ class ExperimentRunner:
 
         # Capture a final runtime snapshot right before collection.
         self._collect_runtime_status_snapshots()
-        
-        # Collect auction data from blockchain
+
+        # Auctions, from the chain.
         logger.info("📊 Collecting auction data from blockchain...")
         try:
             from web3 import Web3
             from agents.common.contract_abis import get_reverse_auction_abi, get_reputation_registry_abi
-            
+
             w3 = Web3(Web3.HTTPProvider(self.rpc_url))
             auction_contract = w3.eth.contract(
                 address=Web3.to_checksum_address(self.reverse_auction_address),
                 abi=get_reverse_auction_abi()
             )
-            
-            # Get auction count and collect each auction
+
             auction_count = auction_contract.functions.auctionIdCounter().call()
             logger.info(f"   Found {auction_count} auction(s) on-chain")
-            
+
             summary = self.metrics_collector.metrics["summary"]
-            
-            # Get reputation contract for querying reputation changes
+
             reputation_contract = w3.eth.contract(
                 address=Web3.to_checksum_address(self.config['blockchain']['contracts']['reputation_registry']),
                 abi=get_reputation_registry_abi()
             )
-            
-            for auction_id in range(1, auction_count + 1):  # IDs start at 1, not 0
+
+            for auction_id in range(1, auction_count + 1):  # auction ids start at 1
                 logger.info(f"   Collecting auction {auction_id}...")
                 auction_data = self.metrics_collector.collect_auction_from_blockchain(
                     w3, auction_contract, auction_id, reputation_contract
                 )
                 self.metrics_collector.metrics["auctions"].append(auction_data)
-                
-                # Update summary counts
+
                 summary["total_auctions"] += 1
                 if auction_data["status"] == "completed":
                     summary["completed_auctions"] += 1
@@ -1923,13 +1752,13 @@ class ExperimentRunner:
                     summary["failed_auctions"] += 1
                 summary["total_bids_attempted"] += len(auction_data["bids_attempted"])
                 summary["total_bids_on_chain"] += len(auction_data["bids_on_chain"])
-                
+
                 logger.info(f"      Status: {auction_data['status']}")
                 logger.info(f"      Bids attempted: {len(auction_data['bids_attempted'])}")
                 logger.info(f"      Bids on-chain: {len(auction_data['bids_on_chain'])}")
                 logger.info(f"      Winner: {auction_data['winner_id']}")
                 logger.info(f"      Quality rating: {auction_data['quality_rating']}/100")
-            
+
             logger.info("\n📈 Summary:")
             logger.info(f"   Completed auctions: {summary['completed_auctions']}/{summary['total_auctions']}")
             logger.info(f"   Total bids attempted: {summary['total_bids_attempted']}")
@@ -1937,11 +1766,11 @@ class ExperimentRunner:
             if summary['total_bids_attempted'] > 0:
                 success_rate = summary['total_bids_on_chain'] / summary['total_bids_attempted']
                 logger.info(f"   Bid success rate: {success_rate:.1%}")
-            
+
         except Exception as e:
             logger.error(f"   Failed to collect auction data: {e}", exc_info=True)
-        
-        # Collect reputation evolution
+
+        # Reputation evolution.
         logger.info("\n🏆 Collecting reputation data...")
         try:
             from agents.common.contract_abis import get_reputation_registry_abi
@@ -1979,73 +1808,56 @@ class ExperimentRunner:
 
             if final_snapshot["reputations"]:
                 self.metrics_collector.metrics["reputation_evolution"].append(final_snapshot)
-                    
+
         except Exception as e:
             logger.error(f"   Failed to collect reputation: {e}")
-        
-        # Collect timing metrics
+
+        # Timing.
         logger.info("\n⏱️  Collecting timing metrics...")
         timing = self.metrics_collector.metrics["timing"]
         timing["phase_durations"] = self.phase_timings
-        
+
         total_time = sum(self.phase_timings.values())
         logger.info(f"   Total experiment time: {total_time:.1f}s ({total_time/60:.1f} min)")
         for phase, duration in self.phase_timings.items():
             logger.info(f"   {phase}: {duration:.1f}s")
-        
-        # Collect timing data from auction data
+
         auctions = self.metrics_collector.metrics["auctions"]
         if auctions:
             exec_times = [a["execution_duration_seconds"] for a in auctions if a["execution_duration_seconds"] > 0]
             eval_times = [a["evaluation_duration_seconds"] for a in auctions if a["evaluation_duration_seconds"] > 0]
-            
+
             timing["execution_times"] = exec_times
             timing["evaluation_times"] = eval_times
-        
-        # Collect errors
+
+        # Errors.
         logger.info("\n⚠️  Collecting errors...")
         errors = self.metrics_collector.collect_errors()
         logger.info(f"   Total errors: {errors.get('total_errors')}")
         logger.info(f"   Total warnings: {errors.get('total_warnings')}")
-        
-        # Highlight critical issues
+
         if errors.get('critical_issues'):
             logger.warning(f"   ⚠️  {len(errors['critical_issues'])} critical issue(s) detected")
-        
+
         # Determine overall success from runtime-complete criteria.
         completeness = self.metrics_collector.collect_system_completeness()
         success = self.metrics_collector.determine_success()
         logger.info(f"   Runtime completeness: {completeness}")
         logger.info(f"\n{'✅' if success else '❌'} Experiment success: {success}")
-        
-        # Save metrics
+
         metrics_file = self.metrics_collector.save_metrics()
         logger.info("="*80)
         logger.info(f"📁 Comprehensive metrics saved to: {metrics_file}")
         logger.info("="*80)
-    
+
     def shutdown_agents(self):
-        """SIGTERM every agent and wait for it, so each flushes its FINAL status.
+        """SIGTERM every agent and wait, so each writes its final status file.
 
-        **Called before `collect_metrics`, deliberately.** Each agent writes its
-        status file periodically (every 10 s) *and* once more from a `finally`
-        block on shutdown. Only that last write is complete: it happens after
-        every job has settled and every cost is booked.
-
-        Collecting metrics while the agents were still alive meant
-        `MetricsCollector._final_total_costs` read whichever periodic write
-        happened to be newest — up to 10 s stale. On block E's re-run that left
-        14 of 80 arm-runs with a `net_balance` in `experiment_metrics.json` that
-        was **$0.051 too high on average, $0.128 at worst**, because complete
-        chain revenue was paired with incomplete costs.
-
-        The analysis was never affected — it reads `provider_<id>_status.json`
-        directly, which is the final write and is internally consistent — but two
-        fields called `net_balance` disagreeing is a trap for anyone who reaches
-        for the wrong one.
-
-        Idempotent: `cleanup()` calls this again on the way out, and a process
-        already reaped is skipped.
+        Called before `collect_metrics`. Agents write their status every 10 s and once more
+        on shutdown, after every job has settled and every cost is booked; reading an
+        earlier write paired complete chain revenue with incomplete costs, so `net_balance`
+        in `experiment_metrics.json` came out too high. (The analysis reads the final
+        status files and was not affected.) Idempotent: `cleanup()` calls it again.
         """
         if getattr(self, "_agents_shut_down", False):
             return
@@ -2064,15 +1876,13 @@ class ExperimentRunner:
                     pass
 
     def cleanup(self):
-        """Shutdown all processes gracefully."""
+        """Shut down every process."""
         logger.info("Shutting down processes...")
 
-        # Agents first (graceful). Normally already done by `shutdown_agents()`
-        # before metrics collection; this covers the failure paths that reach
-        # `finally` without getting that far.
+        # Agents first. Normally `shutdown_agents()` has already stopped them; this
+        # covers the failure paths.
         self.shutdown_agents()
-        
-        # Shutdown Anvil
+
         if self.anvil_process:
             try:
                 logger.info(f"Stopping Anvil (PID: {self.anvil_process.pid})...")
@@ -2084,24 +1894,23 @@ class ExperimentRunner:
                     os.killpg(os.getpgid(self.anvil_process.pid), signal.SIGKILL)
                 except:
                     pass
-        
+
         logger.info("✓ All processes stopped")
-    
+
     async def run(self):
         """Run the complete experiment."""
         self.start_time = datetime.now()
-        
+
         try:
             # Load configuration (initializes metrics_collector)
             self.load_config()
-            
-            # Kill any orphaned processes from previous runs
+
+            # Refuse to start if this run's port is taken.
             self.cleanup_orphaned_processes()
-            
-            # Set start time after metrics_collector is initialized
+
             if self.metrics_collector:
                 self.metrics_collector.set_start_time(self.start_time)
-            
+
             # Phase 1: Setup blockchain
             logger.info("=== Phase 1: Setup Blockchain ===")
             phase_start = datetime.now()
@@ -2111,33 +1920,29 @@ class ExperimentRunner:
             await self.register_agents()
             self.phase_timings["setup_blockchain"] = (datetime.now() - phase_start).total_seconds()
             logger.info(f"✓ Phase 1 completed in {self.phase_timings['setup_blockchain']:.1f}s")
-            
+
             # Phase 2: Start agents
             logger.info("=== Phase 2: Start Agents ===")
             phase_start = datetime.now()
             await self.spawn_agents()
             self.phase_timings["start_agents"] = (datetime.now() - phase_start).total_seconds()
             logger.info(f"✓ Phase 2 completed in {self.phase_timings['start_agents']:.1f}s")
-            
+
             # Phase 3: Run experiment
             logger.info("=== Phase 3: Run Experiment ===")
             phase_start = datetime.now()
             await self.monitor_experiment()
             self.phase_timings["experiment_run"] = (datetime.now() - phase_start).total_seconds()
             logger.info(f"✓ Phase 3 completed in {self.phase_timings['experiment_run']:.1f}s")
-            
-            # Stop the agents BEFORE collecting metrics, so each has written its
-            # final status file. `MetricsCollector._final_total_costs` reads those
-            # files; reading them while the agents were still running picked up a
-            # periodic write up to 10 s stale, and paired complete chain revenue
-            # with incomplete costs. See `shutdown_agents`.
+
+            # Stop the agents before collecting metrics, so each has written its final
+            # status file (see `shutdown_agents`).
             self.shutdown_agents()
 
-            # Collect metrics
             self.collect_metrics()
-            
+
             logger.info("=== Experiment Complete ===")
-            
+
         except Exception as e:
             logger.error(f"Experiment failed: {e}", exc_info=True)
             raise
@@ -2146,9 +1951,8 @@ class ExperimentRunner:
 
 
 async def main():
-    """Main entry point."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Run experiment simulation")
     parser.add_argument("config", type=Path, help="Path to experiment YAML configuration")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -2164,14 +1968,12 @@ async def main():
     )
 
     args = parser.parse_args()
-    
-    # Setup logging
+
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-    
-    # Run experiment
+
     runner = ExperimentRunner(args.config, run_index=args.run_index, run_seed=args.run_seed)
     await runner.run()
 

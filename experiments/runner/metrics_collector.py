@@ -1,9 +1,7 @@
-"""Runtime-first metrics collector for experiment analysis.
+"""Collects a run's metrics into `experiment_metrics.json`.
 
-Collector responsibilities:
-- Keep runtime snapshots produced during execution (consumer/provider status)
-- Pull ground-truth auction and reputation outcomes from blockchain
-- Produce analysis-ready metrics JSON without post-hoc log scraping
+Auction and reputation outcomes come from the chain; bidding, execution, evaluation
+and costs come from the agents' runtime status snapshots and final status files.
 """
 
 import json
@@ -16,9 +14,8 @@ from web3 import Web3
 logger = logging.getLogger(__name__)
 
 
-#: How many consumer status snapshots to keep in `experiment_metrics.json`.
-#: 1 = the final one only. See `record_consumer_status_snapshot` for why this is
-#: not 0, and for the measurement that showed the final snapshot is sufficient.
+#: How many consumer status snapshots to keep in `experiment_metrics.json`;
+#: 1 keeps the final one only (see `record_consumer_status_snapshot`).
 CONSUMER_SNAPSHOT_RETENTION = 1
 
 
@@ -33,21 +30,13 @@ def _optional_float(value: Any) -> Optional[float]:
 
 
 class MetricsCollector:
-    """Collects comprehensive experiment metrics for analysis."""
-    
+    """Collects one run's metrics."""
+
     def __init__(self, experiment_id: str, metrics_dir: Path, logs_dir: Path):
-        """
-        Initialize metrics collector.
-        
-        Args:
-            experiment_id: Unique experiment identifier
-            metrics_dir: Directory to save metrics JSON
-            logs_dir: Directory containing agent logs
-        """
         self.experiment_id = experiment_id
         self.metrics_dir = metrics_dir
         self.logs_dir = logs_dir
-        
+
         self.metrics = {
             "experiment_id": experiment_id,
             "success": False,
@@ -55,14 +44,13 @@ class MetricsCollector:
             "end_time": None,
             "duration_seconds": 0,
 
-            # What produced this run: code version, config identity, environment.
-            # Populated by the experiment runner at run start.
+            # What produced this run; set by the experiment runner at the start.
             "provenance": {},
 
-            # Core data: Array of all auctions (primary data structure)
-            "auctions": [],  # List of auction objects with all details
-            
-            # Aggregated counts (not rates or averages - those are calculated during analysis)
+            # One record per auction; the primary data.
+            "auctions": [],
+
+            # Counts only; rates and averages are computed in the analysis.
             "summary": {
                 "total_auctions": 0,
                 "completed_auctions": 0,
@@ -70,39 +58,35 @@ class MetricsCollector:
                 "total_bids_attempted": 0,
                 "total_bids_on_chain": 0
             },
-            
-            # Reputation tracking over time
-            # Snapshot schema: {after_auction, timestamp, reputations: {provider_id: {score, feedback_count}}, source?}
+
+            # Snapshot schema: {after_auction, timestamp, reputations: {provider_id:
+            # {score, feedback_count}}, source?}
             "reputation_evolution": [],
 
-            # Provider economics
             "provider_financials": {
                 "by_provider": {},
                 "evolution": [],
                 "runtime_snapshots": []
             },
-            
-            # Runtime snapshots captured by experiment runner polling.
+
+            # Runtime snapshots, polled by the experiment runner.
             "runtime": {
                 "consumer_status_snapshots": [],
                 "provider_status_snapshots": []
             },
 
-            # Timing data (raw data, not averages)
             "timing": {
                 "phase_durations": {},
-                "execution_times": [],  # List of execution times per auction
-                "evaluation_times": []  # List of evaluation times per auction
+                "execution_times": [],
+                "evaluation_times": []
             },
-            
-            # Blockchain data (raw counts and gas, not averages)
+
             "blockchain": {
                 "total_transactions": 0,
                 "failed_transactions": 0,
-                "gas_used_per_tx": []  # List of gas used per transaction
+                "gas_used_per_tx": []
             },
-            
-            # Errors and issues
+
             "errors": {
                 "total_errors": 0,
                 "total_warnings": 0,
@@ -110,24 +94,23 @@ class MetricsCollector:
                 "bid_failures": []
             }
         }
-        
+
     def record_provenance(self, provenance: Dict[str, Any]):
         """Store the run's provenance record (see experiment_runner.build_provenance).
 
-        Callers are responsible for redacting secrets before this point: the
-        metrics JSON is a committed artifact.
+        Secrets must be redacted by the caller.
         """
         self.metrics["provenance"] = dict(provenance or {})
 
     def set_start_time(self, start_time: datetime):
         """Record experiment start time."""
         self.metrics["start_time"] = start_time.isoformat()
-        
+
     def set_end_time(self, end_time: datetime):
         """Record experiment end time."""
         self.metrics["end_time"] = end_time.isoformat()
-        
-    def set_contracts(self, reverse_auction: str, payment_token: str, 
+
+    def set_contracts(self, reverse_auction: str, payment_token: str,
                      identity_registry: str, reputation_registry: str):
         """Record deployed contract addresses."""
         self.metrics["contracts"] = {
@@ -172,7 +155,7 @@ class MetricsCollector:
                 continue
             out[int(provider_id)] = normalized
         return out
-        
+
     def set_agents(self, consumer_id: int, provider_ids: List[int], provider_profiles: Optional[List[Dict[str, Any]]] = None):
         """Record agent IDs."""
         normalized_profiles = [
@@ -193,33 +176,17 @@ class MetricsCollector:
             "provider_profiles": normalized_profiles,
             "provider_mix": mix_counts,
         }
-    
+
     def collect_auction_from_blockchain(self, w3: Web3, auction_contract, auction_id: int, reputation_contract=None) -> Dict[str, Any]:
-        """
-        Collect complete auction data from blockchain and runtime snapshots.
-        
-        This is the primary data collection method that builds the auctions array.
-        Each auction object contains:
-        - Auction details (id, budget, duration, service_cid)
-        - All bid attempts (both successful and failed)
-        - Winner information
-        - Service execution details
-        - Quality evaluation
-        - Reputation changes
-        - Timing breakdown
-        
-        Args:
-            w3: Web3 instance
-            auction_contract: ReverseAuction contract instance
-            auction_id: ID of the auction to analyze
-            
-        Returns:
-            Complete auction data dictionary
+        """Build one auction's record from the chain and the runtime snapshots.
+
+        The record holds the auction's terms, every bid attempt (placed or failed), the
+        winner, the execution, the evaluation, the reputation change and the timing.
         """
         auction_data = {
             "auction_id": auction_id,
             "timestamp_created": None,
-            "timestamp_ended": None,  # Actual auction end time from AuctionEnded event
+            "timestamp_ended": None,  # From the AuctionEnded event
             "service_cid": None,
             "service_source_mode": "live_generation",
             "sampled_dataset_id": None,
@@ -232,37 +199,32 @@ class MetricsCollector:
             "commit_duration": 0,
             "reveal_duration": 0,
             "creator_id": None,
-            
-            # Bidding data
-            "bids_attempted": [],  # All bids providers tried to place
-            "bids_on_chain": [],  # Only bids that succeeded on-chain
-            "bid_failures": [],  # Failed bid attempts with reasons
+
+            "bids_attempted": [],  # Every bid a provider tried to place
+            "bids_on_chain": [],  # Only bids placed on chain
+            "bid_failures": [],  # Failed attempts, with reasons
             "winner_id": None,
             "winning_bid_amount": 0,
             "bid_count": 0,
-            
-            # Execution data
+
             "service_executed": False,
             "execution_start": None,
             "execution_end": None,
             "execution_duration_seconds": 0,
             "prompts_answered": 0,
             "prompts_total": 0,
-            
-            # Quality evaluation
+
             "quality_rating": None,
             "quality_method": "unknown",  # "tools", "fallback", or "failed"
             "quality_details": {},
             "evaluation_duration_seconds": 0,
-            
-            # Feedback and reputation
+
             "feedback_submitted": False,
             "feedback_rating": None,
             "reputation_before": None,
             "reputation_after": None,
             "reputation_change": 0,
-            
-            # Timing
+
             "timing": {
                 "creation_to_first_bid": 0,
                 "first_bid_to_close": 0,
@@ -272,32 +234,31 @@ class MetricsCollector:
                 "feedback_submission": 0,
                 "total_auction_cycle": 0
             },
-            
-            # Status
+
             "status": "unknown",  # "completed", "failed", "timeout"
             "errors": []
         }
-        
+
         try:
-            # 1. Get on-chain auction data using getAuctionDetails() which properly returns full struct
-            # This handles the dynamic array (eligibleAgentIds) correctly
+            # 1. Auction terms, from getAuctionDetails(), which also returns the
+            # eligibleAgentIds array.
             auction_info = auction_contract.functions.getAuctionDetails(auction_id).call()
             # Auction struct: (id, buyer, serviceDescriptionCid, maxPrice, commitDuration, startTime,
             #                  eligibleAgentIds, winningAgentId, winningBid, isActive, isCompleted,
             #                  escrowAmount, reputationWeight, revealDuration)
             auction_data["creator_id"] = auction_info[1]  # buyer address
-            auction_data["service_cid"] = auction_info[2]  # serviceDescriptionCid
-            auction_data["budget"] = auction_info[3]  # maxPrice
-            auction_data["commit_duration"] = auction_info[4]  # commitDuration
-            auction_data["reveal_duration"] = auction_info[13]  # revealDuration
-            auction_data["duration"] = auction_info[4] + auction_info[13]  # total nominal length (commit + reveal)
-            auction_data["timestamp_created"] = auction_info[5]  # startTime
-            auction_data["eligible_agent_ids"] = list(auction_info[6])  # eligibleAgentIds array
-            
-            # 2. Get on-chain bids
+            auction_data["service_cid"] = auction_info[2]
+            auction_data["budget"] = auction_info[3]
+            auction_data["commit_duration"] = auction_info[4]
+            auction_data["reveal_duration"] = auction_info[13]
+            auction_data["duration"] = auction_info[4] + auction_info[13]  # commit + reveal
+            auction_data["timestamp_created"] = auction_info[5]
+            auction_data["eligible_agent_ids"] = list(auction_info[6])
+
+            # 2. On-chain bids.
             bid_count = auction_contract.functions.getBidCount(auction_id).call()
             auction_data["bid_count"] = bid_count
-            
+
             for i in range(bid_count):
                 # Bid struct: (provider, agentId, amount, timestamp, reputation, score, reputationDecimals)
                 bid_info = auction_contract.functions.auctionBids(auction_id, i).call()
@@ -305,45 +266,39 @@ class MetricsCollector:
                 rep_decimals = bid_info[6]
                 rep_normalized = rep_raw / (10 ** rep_decimals) if rep_decimals else rep_raw
                 auction_data["bids_on_chain"].append({
-                    "provider_address": bid_info[0],  # provider
-                    "agent_id": bid_info[1],          # agentId
-                    "amount": bid_info[2],             # amount
-                    "timestamp": bid_info[3],          # timestamp
-                    "reputation": rep_normalized,      # normalized 0-100 value
+                    "provider_address": bid_info[0],
+                    "agent_id": bid_info[1],
+                    "amount": bid_info[2],
+                    "timestamp": bid_info[3],
+                    "reputation": rep_normalized,  # normalised to 0-100
                     "reputation_raw": rep_raw,
                     "reputation_decimals": rep_decimals,
-                    "score": bid_info[5],              # weighted score (0-10000)
+                    "score": bid_info[5],  # weighted score (0-10000)
                 })
-            
-            # 3. Get winner information from auction struct
-            # auction_info[7] = winningAgentId, auction_info[8] = winningBid
-            # auction_info[9] = isActive, auction_info[10] = isCompleted
-            winning_agent_id = auction_info[7]  # winningAgentId (0 if no bids)
-            winning_bid_from_struct = auction_info[8]  # winningBid from struct
-            
-            # Also get winningBid from separate mapping as it's more reliable
+
+            # 3. Winner, from the auction struct: [7] winningAgentId, [8] winningBid,
+            # [9] isActive, [10] isCompleted.
+            winning_agent_id = auction_info[7]  # 0 if no bids
+            winning_bid_from_struct = auction_info[8]
+
+            # The separate winningBid mapping is more reliable than the struct.
             try:
                 winning_bid_from_mapping = auction_contract.functions.winningBid(auction_id).call()
             except:
                 winning_bid_from_mapping = 0
-            
-            # Use mapping value if available, otherwise use struct value
+
             winning_bid = winning_bid_from_mapping if winning_bid_from_mapping > 0 else winning_bid_from_struct
-            
-            # Convert to proper types (winningAgentId is uint256, winningBid is uint256)
+
             auction_data["winner_id"] = int(winning_agent_id) if winning_agent_id else None
             auction_data["winning_bid_amount"] = int(winning_bid) if winning_bid else 0
-            
+
             is_active = auction_info[9]
             is_completed = auction_info[10]
-            
-            # 3a. Get actual auction end timestamp from AuctionEnded event
-            # This is the GROUND TRUTH for when the auction actually closed
+
+            # 3a. Actual end time, from the AuctionEnded event.
             try:
-                # Query AuctionEnded events for this auction. Scoped to a recent block window
-                # (not from_block=0) because forked RPC endpoints reject eth_getLogs ranges
-                # wider than ~10000 blocks, and genesis-to-latest on a forked chain vastly
-                # exceeds that once the fork has accumulated tens of thousands of local blocks.
+                # Scoped to a recent block window: forked RPC endpoints reject eth_getLogs
+                # ranges wider than about 10000 blocks.
                 latest_block = w3.eth.block_number
                 event_filter = auction_contract.events.AuctionEnded.create_filter(
                     from_block=max(0, latest_block - 9000),
@@ -351,21 +306,19 @@ class MetricsCollector:
                 )
                 events = event_filter.get_all_entries()
                 if events:
-                    # Get block timestamp for the AuctionEnded event
                     block = w3.eth.get_block(events[0]['blockNumber'])
                     auction_data["timestamp_ended"] = block['timestamp']
                 else:
-                    # Fallback: use theoretical end time if event not found
+                    # Fall back to the nominal end time.
                     auction_data["timestamp_ended"] = auction_data["timestamp_created"] + auction_data["duration"]
             except Exception as e:
                 logger.warning(f"Could not fetch AuctionEnded event for auction {auction_id}: {e}")
-                # Fallback: use theoretical end time
+                # Fall back to the nominal end time.
                 auction_data["timestamp_ended"] = auction_data["timestamp_created"] + auction_data["duration"]
-            
-            # 4. Build attempted/failed bid information from runtime snapshots + on-chain bids.
+
+            # 4. Attempted and failed bids, from the runtime snapshots and the chain.
             runtime_bid_failures = self._runtime_bid_failures_for_auction(auction_id)
 
-            # Include all failed runtime attempts first.
             for failure in runtime_bid_failures:
                 attempt_amount = failure.get("amount")
                 auction_data["bids_attempted"].append({
@@ -375,7 +328,6 @@ class MetricsCollector:
                 })
             auction_data["bid_failures"].extend(runtime_bid_failures)
 
-            # Add all on-chain bids as successful attempts.
             for bid in auction_data["bids_on_chain"]:
                 auction_data["bids_attempted"].append({
                     "provider_id": bid.get("agent_id"),
@@ -383,7 +335,7 @@ class MetricsCollector:
                     "source": "on_chain"
                 })
 
-            # IMPORTANT: Only keep attempts from eligible providers to avoid phantom data.
+            # Keep attempts from eligible providers only.
             eligible_provider_ids = auction_data.get("eligible_agent_ids", [])
             if eligible_provider_ids:
                 auction_data["bids_attempted"] = [
@@ -395,7 +347,7 @@ class MetricsCollector:
                     if b.get("provider_id") in eligible_provider_ids
                 ]
 
-            # De-duplicate attempts while preserving insertion order
+            # De-duplicate, preserving order.
             deduped_attempts = []
             seen_attempts = set()
             for bid in auction_data["bids_attempted"]:
@@ -406,7 +358,7 @@ class MetricsCollector:
                 deduped_attempts.append(bid)
             auction_data["bids_attempted"] = deduped_attempts
 
-            # De-duplicate failures while preserving insertion order
+            # De-duplicate, preserving order.
             deduped_failures = []
             seen_failures = set()
             for failure in auction_data["bid_failures"]:
@@ -421,8 +373,8 @@ class MetricsCollector:
                 seen_failures.add(key)
                 deduped_failures.append(failure)
             auction_data["bid_failures"] = deduped_failures
-            
-            # 5. Collect execution data from runtime provider status snapshots
+
+            # 5. Execution, from the providers' runtime snapshots.
             if auction_data["winner_id"]:
                 runtime_job = self._runtime_job_outcome(auction_data["winner_id"], auction_id)
                 if runtime_job:
@@ -436,91 +388,82 @@ class MetricsCollector:
                     if runtime_job.get("error"):
                         auction_data["errors"].append(f"provider_job_error: {runtime_job.get('error')}")
 
-            # 5b. Merge consumer-side completion and evaluation details from runtime snapshots.
+            # 5b. Completion and evaluation, from the consumer's runtime snapshot.
             runtime_consumer_auction = self._runtime_consumer_auction(auction_id)
             if runtime_consumer_auction:
                 self._apply_runtime_consumer_auction(auction_data, runtime_consumer_auction)
 
-            # 6. Collect reputation data if winner exists and reputation contract provided
+            # 6. Reputation change of the winner.
             if auction_data["winner_id"] and reputation_contract:
                 try:
                     from agents.common.reputation_lookup import fetch_reputation_summary, reputation_to_float
 
-                    # Get current (after) reputation from blockchain using getSummary
                     feedback_count, rep_value, rep_decimals = fetch_reputation_summary(
                         reputation_contract, auction_data["winner_id"]
                     )
                     auction_data["reputation_after"] = (
                         reputation_to_float(rep_value, rep_decimals) if feedback_count > 0 else 0.0
                     )
-                    
-                    # Infer pre-feedback reputation directly from feedback rating and final score.
-                    # Reputation after = Before + (rating - 50), so Before = After - (rating - 50)
+
+                    # Reputation after = before + (rating - 50), so before = after - (rating - 50).
                     if auction_data["reputation_before"] is None and auction_data["feedback_rating"]:
                         expected_change = auction_data["feedback_rating"] - 50
                         auction_data["reputation_before"] = auction_data["reputation_after"] - expected_change
-                    
-                    # Calculate change
+
                     if auction_data["reputation_before"] is not None:
                         auction_data["reputation_change"] = auction_data["reputation_after"] - auction_data["reputation_before"]
                 except Exception as e:
                     logger.error(f"Failed to collect reputation for winner {auction_data['winner_id']}: {e}", exc_info=True)
-            
-            # 8. Calculate timing metrics from raw timestamps
+
+            # 7. Timing.
             self._calculate_auction_timing(auction_data)
-            
-            # 8. Determine status based on blockchain state and runtime signals
+
+            # 8. Status, from the chain state and the runtime signals.
             if is_completed:
-                # Contract marks auction as completed (service delivered and feedback received)
+                # Service delivered and feedback received.
                 auction_data["status"] = "completed"
             elif auction_data["feedback_submitted"]:
-                # Feedback was submitted, so auction completed successfully
                 auction_data["status"] = "completed"
             elif not is_active and auction_data["winner_id"] and auction_data["service_executed"]:
-                # Auction ended, has winner, service executed; await completion/feedback finalization
+                # Executed; completion or feedback not yet final.
                 auction_data["status"] = "incomplete"
             elif not is_active and auction_data["winner_id"]:
-                # Auction ended with winner but service not executed yet
+                # Winner, not executed yet.
                 auction_data["status"] = "incomplete"
             elif not is_active and (auction_data["winner_id"] == 0 or auction_data["winner_id"] is None):
-                # Auction ended but no bids/winner
+                # No bids, no winner.
                 auction_data["status"] = "failed"
             elif len(auction_data["errors"]) > 0:
-                # Had errors during collection
                 auction_data["status"] = "error"
             else:
-                # Still active or other state
                 auction_data["status"] = "incomplete"
-                
+
         except Exception as e:
             logger.error(f"Error collecting auction {auction_id}: {e}")
             auction_data["errors"].append(str(e))
             auction_data["status"] = "error"
-        
-        # Validate data integrity: blockchain is ground truth
+
         self._validate_auction_data(auction_data)
-        
+
         return auction_data
-    
+
     def _calculate_auction_timing(self, auction_data: Dict[str, Any]):
         """Calculate timing metrics from raw timestamps."""
         timing = auction_data["timing"]
-        
+
         try:
-            # Creation to first bid
             if auction_data["bids_on_chain"] and len(auction_data["bids_on_chain"]) > 0:
                 first_bid_ts = auction_data["bids_on_chain"][0]["timestamp"]
                 timing["creation_to_first_bid"] = first_bid_ts - auction_data["timestamp_created"]
-                
-                # First bid to auction close
-                # Use actual auction end timestamp from AuctionEnded event
+
+                # First bid to close, from the AuctionEnded time.
                 if auction_data.get("timestamp_ended"):
                     timing["first_bid_to_close"] = auction_data["timestamp_ended"] - first_bid_ts
                 else:
-                    # Fallback: use last bid timestamp as proxy
+                    # Fall back to the last bid's time.
                     last_bid_ts = auction_data["bids_on_chain"][-1]["timestamp"]
                     timing["first_bid_to_close"] = last_bid_ts - first_bid_ts
-            
+
             execution_start = self._parse_runtime_datetime(auction_data.get("execution_start"))
             execution_end = self._parse_runtime_datetime(auction_data.get("execution_end"))
             execution_duration = int(auction_data.get("execution_duration_seconds", 0) or 0)
@@ -538,29 +481,26 @@ class MetricsCollector:
                 elif execution_start:
                     execution_start_ts = int(execution_start.timestamp())
 
-            # Close to execution start
-            # Use actual auction end timestamp for accurate measurement when we can estimate execution start.
+            # Close to execution start.
             if execution_start_ts is not None and auction_data.get("timestamp_ended"):
                 timing["close_to_execution_start"] = execution_start_ts - auction_data["timestamp_ended"]
 
-                # Note: This CAN be negative if execution started before AuctionEnded event
-                # This happens when provider starts work while auction is still active
-                # or if there's clock skew between blockchain and local system
+                # Negative when the provider started before the AuctionEnded event, or with
+                # clock skew between the chain and the local system.
             elif execution_start_ts is not None and auction_data["bids_on_chain"]:
-                # Fallback: use last bid time as proxy
+                # Fall back to the last bid's time.
                 last_bid_ts = auction_data["bids_on_chain"][-1]["timestamp"]
                 timing["close_to_execution_start"] = execution_start_ts - last_bid_ts
 
             if evaluation_duration > 0:
                 timing["evaluation"] = evaluation_duration
-            
-            # Calculate total cycle time
-            # Only calculate if all components are present (some may be 0 or negative)
+
+            # Total cycle time, only when every component is present.
             if timing["creation_to_first_bid"] > 0 and timing["execution"] > 0:
                 timing["total_auction_cycle"] = (
-                    timing["creation_to_first_bid"] + 
-                    timing["first_bid_to_close"] + 
-                    timing["close_to_execution_start"] + 
+                    timing["creation_to_first_bid"] +
+                    timing["first_bid_to_close"] +
+                    timing["close_to_execution_start"] +
                     timing["execution"] +
                     timing["evaluation"] +
                     timing["feedback_submission"]
@@ -674,24 +614,18 @@ class MetricsCollector:
         runtime_error = runtime_auction.get("error")
         if runtime_error:
             auction_data["errors"].append(f"consumer_auction_error: {runtime_error}")
-    
+
     def _validate_auction_data(self, auction_data: Dict[str, Any]):
-        """
-        Validate auction data integrity using blockchain as ground truth.
-        
-        This method performs critical sanity checks to catch data collection bugs:
-        1. All bids_attempted providers must be in eligible_agent_ids
-        2. All bids_on_chain providers must be in eligible_agent_ids
-        3. Number of on-chain bids should match bid_count from contract
-        4. Winner must be in bids_on_chain
-        5. bids_attempted count should be >= bids_on_chain count
-        
-        Logs warnings for any inconsistencies found.
+        """Log a warning for every inconsistency between an auction record and the chain.
+
+        Checks that every attempted and on-chain bid comes from an eligible provider, that
+        the on-chain bid count matches the contract, that the winner placed a bid, that
+        there are at least as many attempts as on-chain bids, and that timings are plausible.
         """
         auction_id = auction_data["auction_id"]
         eligible = set(auction_data.get("eligible_agent_ids", []))
-        
-        # Validation 1: All attempted bids must be from eligible providers
+
+        # 1. Attempted bids come from eligible providers.
         for bid in auction_data["bids_attempted"]:
             provider_id = bid.get("provider_id")
             if provider_id not in eligible:
@@ -701,8 +635,8 @@ class MetricsCollector:
                     f"This indicates a regex bug or incorrect eligibility filtering."
                 )
                 auction_data["errors"].append(f"Invalid bid attempt from ineligible provider {provider_id}")
-        
-        # Validation 2: All on-chain bids must be from eligible providers
+
+        # 2. On-chain bids come from eligible providers.
         for bid in auction_data["bids_on_chain"]:
             agent_id = bid.get("agent_id")
             if agent_id and agent_id not in eligible:
@@ -712,16 +646,16 @@ class MetricsCollector:
                     f"This indicates a blockchain state inconsistency."
                 )
                 auction_data["errors"].append(f"On-chain bid from ineligible provider {agent_id}")
-        
-        # Validation 3: On-chain bid count consistency
+
+        # 3. On-chain bid count matches the contract.
         if len(auction_data["bids_on_chain"]) != auction_data["bid_count"]:
             logger.warning(
                 f"VALIDATION WARNING: Auction {auction_id} - "
                 f"Collected {len(auction_data['bids_on_chain'])} on-chain bids but "
                 f"contract reports bid_count={auction_data['bid_count']}"
             )
-        
-        # Validation 4: Winner must have an on-chain bid
+
+        # 4. The winner placed an on-chain bid.
         if auction_data["winner_id"]:
             winner_bid = next(
                 (b for b in auction_data["bids_on_chain"] if b.get("agent_id") == auction_data["winner_id"]),
@@ -732,8 +666,8 @@ class MetricsCollector:
                     f"VALIDATION WARNING: Auction {auction_id} - "
                     f"Winner {auction_data['winner_id']} has no on-chain bid recorded"
                 )
-        
-        # Validation 5: Attempted bids should be >= on-chain bids
+
+        # 5. At least as many attempts as on-chain bids.
         attempted_count = len(auction_data["bids_attempted"])
         onchain_count = len(auction_data["bids_on_chain"])
         if attempted_count < onchain_count:
@@ -742,8 +676,8 @@ class MetricsCollector:
                 f"Only {attempted_count} bids attempted but {onchain_count} made it on-chain. "
                 f"This suggests incomplete log parsing."
             )
-        
-        # Validation 6: Sanity check for excessive bid attempts (likely a bug)
+
+        # 6. No excessive number of attempts.
         if attempted_count > onchain_count * 10:
             logger.error(
                 f"VALIDATION ERROR: Auction {auction_id} - "
@@ -753,21 +687,20 @@ class MetricsCollector:
             auction_data["errors"].append(
                 f"Excessive bid attempts: {attempted_count} attempted vs {onchain_count} on-chain"
             )
-        
-        # Validation 7: Check for unreasonable negative timing values
+
+        # 7. No large negative timings.
         timing = auction_data.get("timing", {})
         close_to_exec = timing.get("close_to_execution_start", 0)
-        
-        # Small negative values (< 60s) are acceptable due to clock skew or early execution detection
-        # Large negative values (> 60s) indicate a timing calculation bug
+
+        # Below 60 s, a negative value can come from clock skew or early execution;
+        # above, it is a calculation error.
         if close_to_exec < -60:
             logger.warning(
                 f"VALIDATION WARNING: Auction {auction_id} - "
                 f"Execution started {abs(close_to_exec)}s before auction end. "
                 f"This may indicate clock skew or incorrect timestamp parsing."
             )
-        
-        # Total cycle time should always be positive
+
         total_cycle = timing.get("total_auction_cycle", 0)
         if total_cycle < 0:
             logger.error(
@@ -788,7 +721,7 @@ class MetricsCollector:
             "feedback_submitted": False,
             "reputation_updated": False
         }
-        
+
         try:
             auctions = self.metrics.get("auctions", [])
             consumer_snaps = self.metrics.get("runtime", {}).get("consumer_status_snapshots", [])
@@ -802,38 +735,38 @@ class MetricsCollector:
             completeness["service_evaluated"] = len(completed_auctions) > 0
             completeness["feedback_submitted"] = len(completed_auctions) > 0
 
-            # Reputation updated if final snapshot exists or at least one completed auction exists.
+            # Reputation is updated if a final snapshot or a completed auction exists.
             final_reputation = [
                 s for s in self.metrics.get("reputation_evolution", [])
                 if str(s.get("after_auction")) == "final"
             ]
             completeness["reputation_updated"] = bool(final_reputation) or len(completed_auctions) > 0
 
-            # If provider snapshots indicate completed jobs, keep execution true even when auction extraction lags.
+            # Completed jobs in the provider snapshots count as execution even when auction
+            # extraction lags.
             if not completeness["service_executed"]:
                 for snap in provider_snaps:
                     jobs = (snap.get("status") or {}).get("jobs") or {}
                     if jobs.get("completed"):
                         completeness["service_executed"] = True
                         break
-            
+
         except Exception as e:
             logger.error(f"Error collecting system completeness: {e}")
-        
+
         self.metrics["system_completeness"] = completeness
         return completeness
-    
+
     def collect_errors(self) -> Dict[str, Any]:
         """Collect errors from runtime snapshots and auction-level collection issues."""
         errors = {
             "total_errors": 0,
             "total_warnings": 0,
             "critical_issues": [],  # Only blocking/important errors
-            "bid_failures": []  # Already collected in auction data, kept for reference
+            "bid_failures": []  # Also in the auction records
         }
-        
+
         try:
-            # Auction collection/runtime errors
             for auction in self.metrics.get("auctions", []):
                 for issue in auction.get("errors", []) or []:
                     errors["total_errors"] += 1
@@ -844,7 +777,6 @@ class MetricsCollector:
                         "category": self._categorize_error(str(issue))
                     })
 
-            # Runtime provider snapshot failures
             for snap in self.metrics.get("runtime", {}).get("provider_status_snapshots", []):
                 provider_id = snap.get("provider_id")
                 status = snap.get("status") or {}
@@ -871,22 +803,17 @@ class MetricsCollector:
                         "message": str(status_error)[:300],
                         "category": self._categorize_error(str(status_error))
                     })
-            
+
         except Exception as e:
             logger.error(f"Error collecting errors: {e}")
-        
+
         self.metrics["errors"] = errors
         return errors
-    
+
     def determine_success(self) -> bool:
-        """
-        Determine if experiment met success criteria.
-        
-        Returns:
-            True if all critical phases completed successfully
-        """
+        """True if every critical phase of the run completed."""
         completeness = self.collect_system_completeness()
-        
+
         success = (
             completeness.get("auction_created", False) and
             completeness.get("bids_received", 0) >= 1 and
@@ -896,62 +823,39 @@ class MetricsCollector:
             completeness.get("feedback_submitted", False) and
             self.metrics.get("blockchain", {}).get("failed_transactions", 0) == 0
         )
-        
+
         self.metrics["success"] = success
         return success
-    
+
     def calculate_duration(self):
-        """Calculate total experiment duration."""
+        """Total run duration."""
         if self.metrics["start_time"] and self.metrics["end_time"]:
             start = datetime.fromisoformat(self.metrics["start_time"])
             end = datetime.fromisoformat(self.metrics["end_time"])
             self.metrics["duration_seconds"] = int((end - start).total_seconds())
-    
+
     def save_metrics(self) -> Path:
-        """
-        Save all collected metrics to JSON file.
-        
-        Returns:
-            Path to saved metrics file
-        """
+        """Write the collected metrics to JSON and return the file's path."""
         self.calculate_duration()
         self._derive_blockchain_totals_from_auctions()
-        # Build provider financials from runtime snapshots collected during experiment.
         self.collect_provider_financials()
-        
+
         metrics_file = self.metrics_dir / "experiment_metrics.json"
         with open(metrics_file, 'w') as f:
             json.dump(self.metrics, f, indent=2, ensure_ascii=False)
-        
+
         logger.info(f"✅ Comprehensive metrics saved to {metrics_file}")
         return metrics_file
-    
-    # Helper methods
-    
+
     def record_consumer_status_snapshot(self, timestamp: str, status: Dict[str, Any], source: str = "runtime_status"):
-        """Record the consumer's runtime status, retaining only the most recent.
+        """Record the consumer's runtime status, keeping only the most recent.
 
-        Only ``CONSUMER_SNAPSHOT_RETENTION`` snapshots are kept. Each snapshot
-        re-serialises the consumer's entire auction list, which grows as the run
-        proceeds, so keeping all of them made up 85% of a metrics file.
-
-        **Retaining the last one, rather than none, is deliberate.** Three
-        readers need this field and would break if it were emptied:
-
-        * :func:`analysis.decision_metrics.extract_reputation_weights`
-          — the auction records do not carry the reputation weight the contract
-          was called with; only these snapshots do, and the T2a score
-          verification replays the scoring rule with them;
-        * :meth:`_runtime_consumer_auction` — merges consumer-side completion and
-          evaluation data into each auction record, reading the *latest*
-          occurrence;
-        * :meth:`_check_metrics_completeness` — needs the list to be non-empty.
-
-        Verified on block E before the change: across **80 runs the final
-        snapshot contained every auction id seen in any snapshot (0 incomplete)**,
-        and reputation weights extracted from it alone were identical to those
-        from all 45. Raise the constant if a future consumer prunes completed
-        auctions from its own status, which would invalidate that.
+        Each snapshot re-serialises the consumer's whole auction list, so keeping all of
+        them made up 85% of a metrics file. The last one is kept rather than none because
+        `_runtime_consumer_auction` merges consumer-side completion and evaluation data from
+        it. In 80 runs checked, the final snapshot contained every auction seen in any
+        snapshot; raise ``CONSUMER_SNAPSHOT_RETENTION`` if a consumer ever prunes completed
+        auctions from its status.
         """
         snapshots = self.metrics.setdefault("runtime", {}).setdefault("consumer_status_snapshots", [])
         payload = {
@@ -1017,7 +921,7 @@ class MetricsCollector:
                     }
                 )
 
-        # De-duplicate repeated failures from periodic status polling.
+        # Periodic status polling repeats failures.
         unique: List[Dict[str, Any]] = []
         seen = set()
         for row in out:
@@ -1054,16 +958,15 @@ class MetricsCollector:
         total_bids = sum(len(a.get("bids_on_chain", [])) for a in auctions)
         completed = sum(1 for a in auctions if str(a.get("status", "")).lower() == "completed")
 
-        # Conservative minimum on-chain tx estimate known from auction records:
-        # successful bids + service completion tx for completed auctions.
+        # Lower bound known from the auction records: placed bids plus one completion
+        # per completed auction.
         self.metrics["blockchain"]["total_transactions"] = int(total_bids + completed)
 
     def _final_total_costs(self, provider_id: int) -> Optional[float]:
         """``total_costs`` from the agent's final status file, or None.
 
-        Written at shutdown after every job settles, so its costs and its revenue
-        describe the same instant — unlike the periodic snapshots, which the
-        run can outlive by up to one poll interval.
+        Written at shutdown after every job settles, so its costs match the complete chain
+        revenue, unlike a periodic snapshot, which can be up to one poll interval stale.
         """
         path = self.logs_dir / f"provider_{int(provider_id)}_status.json"
         try:
@@ -1114,13 +1017,10 @@ class MetricsCollector:
         service_llm_costs: Optional[float] = None,
         cost_breakdown: Optional[Dict[str, Any]] = None,
     ):
-        """Append a runtime provider financial snapshot (deduplicated, monotonic-safe).
+        """Append a provider's runtime financial snapshot, skipping exact duplicates.
 
-        The reasoning/service split is optional and stays absent when the provider
-        runtime did not report it. It must never default to 0.0: a heuristic agent
-        legitimately has zero reasoning cost, while a run predating the split has
-        *unknown* reasoning cost, and conflating the two corrupts cost-of-intelligence
-        comparisons downstream.
+        The reasoning/service split stays None when the provider did not report it, never
+        0.0: a heuristic agent has zero reasoning cost, whereas an unreported split is unknown.
         """
         runtime_snapshots = self.metrics.setdefault("provider_financials", {}).setdefault("runtime_snapshots", [])
         resolved_profile = self._normalize_provider_profile(provider_profile)
@@ -1142,11 +1042,10 @@ class MetricsCollector:
             snapshot["reasoning_llm_costs"] = float(reasoning_llm_costs)
         if service_llm_costs is not None:
             snapshot["service_llm_costs"] = float(service_llm_costs)
-        # Call and token counts. Deliberately excluded from the dedupe comparison
-        # below: they drift on every snapshot and would defeat it.
+        # Call and token counts change on every snapshot, so they are left out of the
+        # duplicate check.
         snapshot.update(cost_breakdown or {})
 
-        # Skip exact duplicates for same provider to keep evolution compact.
         for prev in reversed(runtime_snapshots):
             if int(prev.get("provider_id", -1)) != int(provider_id):
                 continue
@@ -1177,7 +1076,7 @@ class MetricsCollector:
         provider_ids = self.metrics.get("agents", {}).get("provider_ids", [])
         provider_ids = [int(pid) for pid in provider_ids] if provider_ids else []
 
-        # Backfill providers from runtime snapshots if IDs are unavailable.
+        # Take provider ids from the runtime snapshots if none are registered.
         if not provider_ids:
             provider_ids = sorted(
                 {
@@ -1200,20 +1099,13 @@ class MetricsCollector:
             revenue_from_runtime = float(last.get("revenue", 0.0))
             revenue_discrepancy = revenue_from_runtime - revenue_from_auctions
 
-            # Revenue from completed auctions is authoritative for experiment outcomes.
+            # Revenue from completed auctions is authoritative.
             reconciled_revenue = revenue_from_auctions
 
-            # ⚠️ Costs must come from the SAME instant, or net_balance mixes two
-            # clocks. Revenue above is complete (every settled auction on chain);
-            # `snapshots[-1]` is the last *periodic* status write, up to one poll
-            # interval stale. Pairing them understated costs by $0.025 on average
-            # and $0.148 at worst across block E's 80 arm-runs, every error in the
-            # same direction, so net_balance was biased upward — and by more for
-            # the heuristic arm than the LLM arm, which shrank the measured
-            # difference the paper turns on by about 5%.
-            #
-            # The agent writes a final status file at shutdown, after everything
-            # settles. Prefer it; fall back to the snapshot and record the gap.
+            # Costs must describe the same instant as the revenue, which is complete; the
+            # last periodic snapshot can be up to one poll interval stale and biased
+            # net_balance upward. Prefer the final status file written at shutdown; fall
+            # back to the snapshot and record the gap.
             costs_from_snapshot = float(last.get("total_costs", 0.0))
             costs_from_status = self._final_total_costs(provider_id)
             total_costs = (
@@ -1251,7 +1143,7 @@ class MetricsCollector:
                 "total_costs_from_status": costs_from_status,
                 "total_costs_discrepancy": costs_discrepancy,
                 "llm_costs": float(last.get("llm_costs", 0.0)),
-                # Absent (not 0.0) for runs predating the reasoning/service split.
+                # None, not 0.0, when the provider did not report the reasoning/service split.
                 "reasoning_llm_costs": _optional_float(last.get("reasoning_llm_costs")),
                 "service_llm_costs": _optional_float(last.get("service_llm_costs")),
                 "reasoning_llm_calls": _optional_float(last.get("reasoning_llm_calls")),
@@ -1259,10 +1151,6 @@ class MetricsCollector:
                 "reasoning_input_tokens": _optional_float(last.get("reasoning_input_tokens")),
                 "reasoning_output_tokens": _optional_float(last.get("reasoning_output_tokens")),
                 "gas_costs": float(last.get("gas_costs", 0.0)),
-                # NB: `total_costs` is set above from the settled figure. It used
-                # to be re-set here from `last` — a duplicate key that silently
-                # won, leaving `net_balance` computed from settled costs while
-                # `total_costs` reported the stale snapshot, in the same record.
                 "net_balance": reconciled_net_balance,
                 "net_balance_from_runtime": float(last.get("net_balance", 0.0)),
                 "snapshots": len(snapshots)
@@ -1276,30 +1164,28 @@ class MetricsCollector:
 
         self.metrics["provider_financials"] = financials
         return financials
-    
+
     def _identify_operation(self, tx: Dict) -> Optional[str]:
         """Identify operation type from transaction data."""
         try:
-            # Get function selector (first 4 bytes of input data)
+            # Function selector: the first 4 bytes of the input data.
             if tx.get('input') and len(tx['input']) >= 10:
                 selector = tx['input'][:10]
-                
-                # Common function selectors (you can expand this)
+
                 selectors = {
                     "0x095ea7b3": "approve_usdc",
                     "0xa9059cbb": "transfer_usdc",
-                    # Add more selectors based on your contract ABIs
                 }
-                
+
                 return selectors.get(selector, "unknown")
         except:
             pass
         return None
-    
+
     def _categorize_error(self, error_line: str) -> str:
         """Categorize error based on message content."""
         error_lower = error_line.lower()
-        
+
         if "self-feedback" in error_lower or "self feedback" in error_lower:
             return "self_feedback_blocked"
         elif "gas" in error_lower:
@@ -1314,4 +1200,3 @@ class MetricsCollector:
             return "network_error"
         else:
             return "other"
-    

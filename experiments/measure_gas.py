@@ -34,17 +34,17 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from web3 import Web3
 
-# event decoding sees unrelated logs (e.g. token transfers) in the same receipt
+# Event decoding sees unrelated logs (e.g. token transfers) in the same receipt.
 warnings.filterwarnings("ignore", message=".*MismatchedABI.*")
 
 REPO = Path(__file__).resolve().parents[1]
 SNAPSHOT = REPO / "experiments/chain/sepolia_registries.json"
 MANIFEST = json.loads(SNAPSHOT.with_suffix(".manifest.json").read_text())
 OUT = REPO / "contracts/out"
-HISTORY = [0, 1, 10, 30, 100]          # prior ratings of the revealing provider
-MAX_PRICE = 1_000_000                  # 1 USDC (6 decimals)
+HISTORY = [0, 1, 10, 30, 100]  # prior ratings of the revealing provider
+MAX_PRICE = 1_000_000  # 1 USDC (6 decimals)
 REP_DEFAULT = 80
-# fixed throwaway keys, funded with anvil_setBalance
+# Fixed throwaway keys, funded with anvil_setBalance.
 KEYS = [Web3.keccak(text=f"measure_gas account {i}") for i in range(4)]
 REP_ABI = [{"type": "function", "name": "giveFeedback", "stateMutability": "nonpayable", "outputs": [],
             "inputs": [{"name": "agentId", "type": "uint256"}, {"name": "value", "type": "int128"},
@@ -156,7 +156,7 @@ def main():
             sig = Account.sign_message(encode_defunct(Web3.keccak(params)), owner.key).signature
             return c.send(owner, auc.functions.completeService(aid, params + bytes(sig)))
 
-        # history-dependent reveal: p1 accumulates ratings between measurements
+        # Reveal gas depends on history: p1 accumulates ratings between measurements.
         reveal_by_history = {}
         given = 0
         for n in HISTORY:

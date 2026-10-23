@@ -1,1 +1,1 @@
-"""Experiment runners for orchestrating multi-agent simulations."""
+"""The experiment runner: one market run from a condition config."""

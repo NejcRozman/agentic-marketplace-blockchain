@@ -1,22 +1,16 @@
 """Fetch the arXiv paper corpus into ``data/corpus/``, the layout the dataset collection reads.
 
-Two subcommands:
-
 ``search``
-    Candidate discovery. Runs arXiv queries and dumps id/title/date/categories
-    so a corpus can be *curated* rather than sampled: topical clusters and
-    deliberately conflicting pairs are not something a search query returns
-    reliably, so the workflow is search → inspect → pin ids into a spec file.
+    Runs arXiv queries and lists id, title, date and categories, for curating the
+    corpus by hand (topical clusters and conflicting pairs) into a spec file.
 
 ``build``
-    Reads the pinned spec, fetches metadata by id, downloads each PDF, writes
-    the abstract to a sibling ``.txt``, and emits a manifest. The ``.pdf`` +
-    ``.txt`` pairing is the convention ``ServiceGenerator._read_abstract`` and
-    ``generate_dataset._discover_pdf_paths`` both depend on.
+    Reads the spec, fetches metadata by id, downloads each PDF, writes its abstract
+    to a sibling ``.txt`` (read by ``ServiceGenerator._read_abstract``) and emits a
+    manifest.
 
-Every PDF is validated with pypdf before it is kept: the executor ingests via
-``PyPDFDirectoryLoader``, so a scanned or image-only PDF would silently
-contribute nothing to the RAG index while still counting as a document.
+Every PDF is checked with pypdf, the extractor the executor uses, so an image-only
+PDF cannot enter the RAG index as an empty document.
 """
 
 from __future__ import annotations
@@ -58,8 +52,7 @@ DEFAULT_OUT_DIR = paths.DATA_DIR / "corpus"
 ARXIV_API = "https://export.arxiv.org/api/query"
 USER_AGENT = "agentic-marketplace-corpus/1.0 (research; nejc.rozman@fs.uni-lj.si)"
 
-#: arXiv asks for at least 3 s between API calls. PDF downloads hit a different
-#: host and tolerate a shorter gap, but stay polite: this runs once.
+#: arXiv asks for at least 3 s between API calls; PDF downloads use another host.
 API_DELAY_S = 3.0
 PDF_DELAY_S = 1.0
 
@@ -79,10 +72,8 @@ _STOPWORDS = frozenset(
     new novel some more most less than not no""".split()
 )
 
-#: Words that are technically content but carry almost no discriminating power
-#: in this corpus — "Large Language Models" appears in a third of the titles.
-#: Kept, but only after every stronger word, so the distinguishing term
-#: ("Mirage", "Sharding") survives the truncation.
+#: Words with little discriminating power in this corpus ("Large Language Models"
+#: appears in a third of the titles); used only after every stronger word.
 _WEAK_WORDS = frozenset(
     """large language model models llm llms learning deep neural network networks
     system systems study survey approach approaches analysis method methods
@@ -93,7 +84,6 @@ _WEAK_WORDS = frozenset(
 # ---------------------------------------------------------------------------
 # arXiv API
 # ---------------------------------------------------------------------------
-
 @dataclass
 class ArxivPaper:
     """One arXiv entry, flattened to the fields the manifest records."""
@@ -217,7 +207,6 @@ def fetch_by_ids(arxiv_ids: Sequence[str], batch_size: int = 40) -> Dict[str, Ar
 # ---------------------------------------------------------------------------
 # Naming
 # ---------------------------------------------------------------------------
-
 def _surname(author: str) -> str:
     """Last whitespace-separated token, letters only. 'Rylan Schaeffer' -> 'Schaeffer'."""
     tokens = [t for t in re.split(r"\s+", author.strip()) if t]
@@ -231,8 +220,6 @@ def _title_camel(title: str, max_words: int = 3) -> str:
     """'Are Emergent Abilities of LLMs a Mirage?' -> 'EmergentAbilitiesMirage'.
 
     Strong words keep their title order; weak words fill any remaining slots.
-    Truncating a title to three words throws away most of it, so what survives
-    has to be the discriminating part.
     """
     words = re.findall(r"[A-Za-z][A-Za-z0-9]*", title)
     content = [w for w in words if w.lower() not in _STOPWORDS] or words
@@ -245,14 +232,11 @@ def _title_camel(title: str, max_words: int = 3) -> str:
 
 
 def make_stem(paper: ArxivPaper, taken: Iterable[str], override: str = "") -> str:
-    """Build the ``Surname_TitleCamel`` stem, matching the v1 convention.
+    """Build the ``Surname_TitleCamel`` stem.
 
-    The stem is not cosmetic: the executor exposes it to the RAG as
-    ``source_id`` (``service_executor._extract_paper_metadata``) and the
-    estimation probe sees it as ``source_pdf_names``
-    (``experiments/estimation/dataset._pdf_stem``). It is task information the
-    provider would really have, so it has to stay topically informative and
-    unique — which is why the spec may override the heuristic per paper.
+    The executor shows the stem to the RAG as ``source_id`` and the estimators see it in
+    ``source_pdf_names``, so it must be informative and unique; the spec may override
+    it per paper.
     """
     taken = set(taken)
     if override:
@@ -265,8 +249,7 @@ def make_stem(paper: ArxivPaper, taken: Iterable[str], override: str = "") -> st
     if base not in taken:
         return base
 
-    # Widen the title before falling back to a numeric suffix — a longer title
-    # stays informative where "_2" does not.
+    # Widen the title before falling back to a numeric suffix.
     wider = f"{_surname(paper.authors[0] if paper.authors else '')}_{_title_camel(paper.title, max_words=5)}"
     if wider not in taken:
         return wider
@@ -281,7 +264,6 @@ def make_stem(paper: ArxivPaper, taken: Iterable[str], override: str = "") -> st
 # ---------------------------------------------------------------------------
 # PDF handling
 # ---------------------------------------------------------------------------
-
 @dataclass
 class PdfStats:
     pages: int
@@ -308,7 +290,6 @@ def download_pdf(paper: ArxivPaper, dest: Path) -> None:
 # ---------------------------------------------------------------------------
 # Spec
 # ---------------------------------------------------------------------------
-
 @dataclass
 class SpecEntry:
     arxiv_id: str
@@ -351,7 +332,6 @@ def load_spec(path: Path) -> List[SpecEntry]:
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
-
 def build_corpus(
     spec_path: Path,
     out_dir: Path,
@@ -403,8 +383,8 @@ def build_corpus(
             rejected.append(entry.arxiv_id)
             continue
 
-        # The .txt is the *abstract*, not the extracted body: that is what
-        # ServiceGenerator._read_abstract expects, and what v1's files hold.
+        # The .txt holds the abstract, which ServiceGenerator._read_abstract expects,
+        # not the extracted body.
         txt_path.write_text(paper.abstract + "\n", encoding="utf-8")
 
         records.append(
@@ -433,8 +413,7 @@ def build_corpus(
             }
         )
 
-    # Conflict links are written as arXiv ids in the spec; resolve them to
-    # stems too, since stems are what every downstream consumer works in.
+    # Conflict links are arXiv ids in the spec; resolve them to stems.
     by_id = {r["requested_id"]: r["stem"] for r in records}
     for record in records:
         record["conflicts_with_stems"] = [
@@ -468,7 +447,6 @@ def build_corpus(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-
 def _cmd_search(args: argparse.Namespace) -> int:
     queries: List[str] = list(args.query or [])
     if args.queries_file:
