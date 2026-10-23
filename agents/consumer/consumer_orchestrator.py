@@ -15,7 +15,6 @@ import copy
 import logging
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
@@ -24,7 +23,7 @@ from enum import Enum
 
 from agents.config import Config
 from agents.common.ipfs_client import IPFSClient
-from agents.common.executor_tier_dataset_sampler import ExecutorTierDatasetSampler
+from agents.common.dataset_sampler import DatasetSampler
 from agents.common.seeding import agent_rng
 from agents.consumer.blockchain_handler import ConsumerBlockchainHandler
 from agents.consumer.service_generator import ServiceGenerator
@@ -103,7 +102,7 @@ class Consumer:
         """Initialize consumer agent."""
         self.config = config
 
-        # S7 §A.1 (D4/D5/D9): the consumer's private RNG, derived from the run
+        # The consumer's private RNG, derived from the run
         # seed exactly as the provider's is. Its draws — which providers are
         # eligible, which service is requested, poll jitter — are the ones that
         # must be identical across paired arms at the same seed.
@@ -125,7 +124,7 @@ class Consumer:
         # Service generation cache
         self.available_services: List[Dict[str, Any]] = []  # Pre-generated services
         self.service_index: int = 0  # Track which service to use next
-        self._sampled_dataset_sampler: Optional[ExecutorTierDatasetSampler] = None
+        self._sampled_dataset_sampler: Optional[DatasetSampler] = None
         
         # Runtime state
         self.running = False
@@ -144,7 +143,7 @@ class Consumer:
                        Path(__file__).parent.parent / "data" / "jobs")
         )
 
-        logger.info(f"Consumer initialized")
+        logger.info("Consumer initialized")
 
     def _is_sampled_dataset_mode(self) -> bool:
         """Return whether the consumer should source services from a collected dataset."""
@@ -154,7 +153,7 @@ class Consumer:
     def _get_service_selection_mode(self) -> str:
         """Resolve service selection policy.
 
-        ``shuffled_pass`` (S7 §A.3) is only meaningful over a dataset, where the
+        ``shuffled_pass`` is only meaningful over a dataset, where the
         sampler holds the seeded permutation; asked for in live-generation mode
         it degrades to ``sequential`` rather than pretending to shuffle.
         """
@@ -169,7 +168,7 @@ class Consumer:
 
         Raises through from the sampler once all 30 are used: a 31st auction
         would re-serve a requirement the agent has already executed and priced,
-        which is exactly what the mode exists to prevent (§B.3).
+        which is exactly what the mode exists to prevent.
         """
         requirement_id = self._get_sampled_dataset_sampler().next_requirement_id()
         for index, service in enumerate(self.available_services):
@@ -181,7 +180,7 @@ class Consumer:
             f"the {len(self.available_services)} loaded services"
         )
 
-    def _get_sampled_dataset_sampler(self) -> ExecutorTierDatasetSampler:
+    def _get_sampled_dataset_sampler(self) -> DatasetSampler:
         """Return cached dataset sampler for dataset-backed experiments."""
         if self._sampled_dataset_sampler is not None:
             return self._sampled_dataset_sampler
@@ -192,9 +191,8 @@ class Consumer:
 
         dataset_id = getattr(self.config, "sampled_dataset_id", None)
         run_selection_mode = getattr(self.config, "sampled_dataset_run_selection_mode", "round_robin")
-        # S7 §A.3: one seed per run. `sampled_dataset_selection_seed` predates
-        # `run_seed` and still wins if a config sets it, but S7 configs should set
-        # only `run_seed` — two seeds for one run is two things that can disagree.
+        # One seed per run: `sampled_dataset_selection_seed` wins if a config sets
+        # it, but the experiments set only `run_seed`.
         base_seed = getattr(self.config, "sampled_dataset_selection_seed", None)
         if base_seed is None:
             base_seed = getattr(self.config, "run_seed", None)
@@ -210,10 +208,10 @@ class Consumer:
         requirement_selection_mode = str(
             getattr(self.config, "service_selection", "sequential") or "sequential"
         ).strip().lower()
-        if requirement_selection_mode not in ExecutorTierDatasetSampler.SELECTION_MODES:
+        if requirement_selection_mode not in DatasetSampler.SELECTION_MODES:
             requirement_selection_mode = "round_robin"
 
-        self._sampled_dataset_sampler = ExecutorTierDatasetSampler(
+        self._sampled_dataset_sampler = DatasetSampler(
             dataset_dir,
             dataset_id,
             requirement_selection_mode=requirement_selection_mode,
@@ -348,7 +346,7 @@ class Consumer:
                 }
                 services.append(
                     {
-                        "service_cid": ExecutorTierDatasetSampler.build_dataset_service_cid(
+                        "service_cid": DatasetSampler.build_dataset_service_cid(
                             sampler.dataset_id,
                             requirement_id,
                         ),
@@ -458,7 +456,7 @@ class Consumer:
         if service_index is None:
             selection_mode = self._get_service_selection_mode()
             if selection_mode == "shuffled_pass":
-                # S7 §A.3 (D6). The sampler drew the permutation under the run
+                # The sampler drew the permutation under the run
                 # seed; walking it here is what makes the mode real. Consuming
                 # from the sampler rather than indexing locally is deliberate —
                 # the sampler is what raises when the pass runs out.
@@ -871,11 +869,9 @@ class Consumer:
 def _install_graceful_shutdown():
     """Write a final status on SIGTERM instead of dying mid-flight.
 
-    Same defect as the provider's: the runner sends SIGTERM and waits 5s, but
-    Python's default action terminates without unwinding, so the ``finally``
-    that writes the closing status never ran and the newest file was whatever
-    the polling loop last wrote. The runner's own completion check reads this
-    file, so a stale snapshot also understates `completed_auctions`.
+    The runner sends SIGTERM and waits 5 s, but Python's default action terminates
+    without unwinding, so the ``finally`` that writes the closing status would
+    not run, and the runner's completion check reads that status file.
     """
     import signal as _signal
 

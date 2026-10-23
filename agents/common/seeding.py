@@ -1,4 +1,4 @@
-"""Per-agent RNG derivation (S7 §A.1, defects D1/D3/D4/D5/D7/D9).
+"""Per-agent random number generators, derived from the run seed.
 
 Every controllable draw on the live agent path must come from an RNG instance
 owned by the drawing agent, never from the ``random`` module's global generator.
@@ -15,9 +15,9 @@ One seed per run, derived per agent::
     provider 4428 -> random.Random(1007 + 4428)
     consumer 1    -> random.Random(1007 + 1)
 
-The derivation mirrors the one already used for the dataset sampler in
-``provider_agent/orchestrator.py`` so an agent's policy draws and its dataset
-draws move together under the same run seed.
+The same derivation is used for the dataset sampler in
+``provider/orchestrator.py``, so an agent's policy draws and its dataset draws
+move together under the same run seed.
 """
 
 from __future__ import annotations

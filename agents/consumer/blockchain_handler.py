@@ -1,18 +1,15 @@
 """Blockchain handler for consumer agent operations."""
 
-import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
 try:
     from ..config import config
     from ..common.blockchain_client import BlockchainClient
-    from ..common.ipfs_client import IPFSClient
 except ImportError:
     from config import Config
     config = Config()
     from common.blockchain_client import BlockchainClient
-    from common.ipfs_client import IPFSClient
 
 logger = logging.getLogger(__name__)
 

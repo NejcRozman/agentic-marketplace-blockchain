@@ -1,4 +1,4 @@
-"""Helpers for dataset-backed executor experiment playback."""
+"""Replay of the recorded service dataset: requests, and the recorded runs of each."""
 
 from __future__ import annotations
 
@@ -11,20 +11,18 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
 
-class ExecutorTierDatasetSampler:
-    """Load and replay requirements and runs from an executor-tier dataset."""
+class DatasetSampler:
+    """Load and replay requests and their recorded runs from the dataset."""
 
     SERVICE_CID_SCHEME = "sampled-executor"
 
-    #: ``shuffled_pass`` (S7 §A.3, defect D6) is the mode S7 requires for
-    #: requirements: permute the dataset under the run seed, then consume it in
-    #: that order exactly once.
+    #: ``shuffled_pass`` is the mode the experiments use for requests: permute
+    #: the dataset under the run seed, then consume it in that order exactly once.
     #:
-    #: ``random`` draws *with replacement*, so a requirement can recur — and a
-    #: recurring requirement is already in the agent's own cost history, which
-    #: defeats the estimator's premise (§B.3: the test requirement never appears
-    #: in its own history). ``round_robin`` makes one clean pass but always the
-    #: same one, so the job stream is a constant across every seed and cell.
+    #: ``random`` draws *with replacement*, so a request can recur, and a
+    #: recurring request is already in the agent's own cost history.
+    #: ``round_robin`` makes one pass but always the same one, so the job stream
+    #: would be identical across seeds.
     SELECTION_MODES = {"round_robin", "random", "shuffled_pass"}
 
     def __init__(
@@ -67,11 +65,8 @@ class ExecutorTierDatasetSampler:
         if self.requirement_selection_mode == "shuffled_pass":
             self._rng.shuffle(self._shuffled_requirement_order)
 
-        # The pass is the *run horizon*, which is shorter than the dataset.
-        # Dataset v2 holds 116 requirements while a run is 30 auctions, so
-        # without a limit "the 31st raises" (§A.5) could never hold — the run
-        # would silently keep drawing new requirements. The limit makes the
-        # horizon explicit and keeps exhaustion a hard error.
+        # The pass limit is the run horizon. It makes the horizon explicit and
+        # keeps exhaustion a hard error.
         self.requirement_pass_limit = (
             None if requirement_pass_limit is None else int(requirement_pass_limit)
         )
@@ -112,11 +107,6 @@ class ExecutorTierDatasetSampler:
             "requirement_id": unquote(requirement_path),
         }
 
-    @classmethod
-    def is_dataset_service_cid(cls, value: str) -> bool:
-        """Return whether the given service CID encodes dataset metadata."""
-        return cls.parse_dataset_service_cid(value) is not None
-
     def list_requirement_ids(self) -> List[str]:
         """Return requirement ids in deterministic dataset order."""
         return list(self._requirement_order)
@@ -127,7 +117,7 @@ class ExecutorTierDatasetSampler:
         Under ``shuffled_pass`` that is the seeded permutation; otherwise it is
         dataset order. Callers that hold their own service list — the consumer
         does — order it by this so the pass they walk is the pass the sampler
-        drew (S7 §A.3).
+        drew.
         """
         if self.requirement_selection_mode == "shuffled_pass":
             return list(self._shuffled_requirement_order)
@@ -155,7 +145,7 @@ class ExecutorTierDatasetSampler:
                 f"shuffled_pass exhausted: dataset '{self.dataset_id}' holds "
                 f"{len(order)} requirements and all have been consumed. A run may "
                 f"not reuse a requirement — it would already be in the agent's own "
-                f"cost history (S7 §A.3)."
+                f"cost history."
             )
 
         requirement_id = order[self._requirement_cursor]
@@ -168,22 +158,6 @@ class ExecutorTierDatasetSampler:
             raise KeyError(f"Unknown requirement_id: {requirement_id}")
         return copy.deepcopy(self._requirements_by_id[requirement_id])
 
-    def sample_requirement(self, selection_mode: Optional[str] = None) -> Dict[str, Any]:
-        """Select a requirement record for the given mode."""
-        if not self._requirement_order:
-            raise ValueError(f"No requirement records found in {self.requirements_jsonl_path}")
-
-        resolved_mode = self._normalize_selection_mode(selection_mode or self.requirement_selection_mode)
-        if resolved_mode == "random":
-            requirement_id = self._rng.choice(self._requirement_order)
-        elif resolved_mode == "shuffled_pass":
-            requirement_id = self.next_requirement_id()
-        else:
-            requirement_id = self._requirement_order[self._requirement_cursor % len(self._requirement_order)]
-            self._requirement_cursor += 1
-
-        return self.get_requirement(requirement_id)
-
     def sample_run(
         self,
         requirement_id: str,
@@ -193,10 +167,8 @@ class ExecutorTierDatasetSampler:
         """Select a run for a given requirement and effort tier.
 
         ``shuffled_pass`` is a *requirement*-level mode and falls through to
-        round-robin here (S7 §A.3). §7.3 asks for one pass through the dataset's
-        requirements; choosing among repeated recordings of the same requirement
-        and tier is a different question, and round-robin already answers it
-        deterministically.
+        round-robin here: choosing among the recordings of one request and tier
+        is a different question, and round-robin answers it deterministically.
         """
         resolved_tier = self._normalize_effort_tier(effort_tier)
         key = (str(requirement_id), resolved_tier)

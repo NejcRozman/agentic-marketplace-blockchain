@@ -12,9 +12,8 @@ ENV_FILE_PATH = AGENTS_DIR / ".env"
 # This allows experiment runner to override contract addresses for each run
 load_dotenv(ENV_FILE_PATH, override=False)
 
-#: The consumer side's model — requirement generation and evaluation (S4 §2.1).
-#: The same model the architectures give the executor, so "consumer side" is one
-#: deliberate choice rather than two accidental ones.
+#: The consumer side's model, for request generation and evaluation: the same
+#: model the architectures give the executor.
 CONSUMER_LLM_DEFAULT = "openai/gpt-5.4-mini"
 
 
@@ -49,12 +48,10 @@ class Config:
         # Provider Agent ID
         self.agent_id = int(os.getenv("BLOCKCHAIN_AGENT_ID", "4427"))
 
-        # S7 §C — the abstention gate, which is S6's rung O2c. Same name and same
-        # meaning as the simulator's provider spec field.
-        #   price_only       - the original behaviour: bid on every eligible
-        #                      auction, never decline (rung O1).
-        #   price_or_decline - abstain when believed cost + overhead exceeds the
-        #                      highest price this agent has itself won at (O2c).
+        # The decline rule.
+        #   price_only       - bid on every eligible auction, never decline.
+        #   price_or_decline - decline when believed cost + overhead exceeds the
+        #                      highest price this agent has itself won at.
         self.action_space = os.getenv("ACTION_SPACE", "price_only").strip().lower() or "price_only"
         if self.action_space not in ("price_only", "price_or_decline"):
             raise ValueError(
@@ -62,27 +59,25 @@ class Config:
                 f"'price_or_decline'"
             )
 
-        # S7 §B.2: which cost estimator the provider bids with.
-        #   none      - H, the pure heuristic (default; nothing changes)
-        #   r_naive   - regression on own history, unguarded
-        #   r_guarded - ridge + refuses to fit below 2 obs/parameter
+        # Where the provider's cost estimate comes from (see provider/cost_estimators.py):
+        #   none (Adaptive's running average), r_guarded (Regression),
+        #   decomposed (LLM-Estimate), oracle.
         self.cost_estimator = os.getenv("COST_ESTIMATOR", "none").strip().lower() or "none"
 
-        # S7 §A.6.5: how often the provider loop polls the chain. The default
-        # 5s cannot reliably catch a 5s reveal window.
+        # How often the provider loop polls the chain. The default 5 s cannot
+        # reliably catch a short reveal window.
         monitor_interval_raw = os.getenv("PROVIDER_MONITOR_INTERVAL", "").strip()
         if monitor_interval_raw:
             self.provider_monitor_interval = float(monitor_interval_raw)
 
-        # S7 §A.6.5 / gate G-E: minimum seconds left in the commit phase for a
-        # bid to be worth sending. Unset keeps the historic 10s.
+        # Minimum seconds left in the commit phase for a bid to be worth sending.
+        # Unset keeps the default of 10 s.
         bid_freshness_raw = os.getenv("BID_FRESHNESS_MIN_SECONDS", "").strip()
         if bid_freshness_raw:
             self.bid_freshness_min_seconds = float(bid_freshness_raw)
 
-        # Reproducibility (S7 §A.1): one seed per run, from which every agent
-        # derives its own stream as `run_seed + agent_id`. Unset means unseeded,
-        # which is legacy behaviour and must not be used for S7 runs.
+        # One seed per run, from which every agent derives its own stream as
+        # `run_seed + agent_id`. Unset means unseeded (not reproducible).
         run_seed_raw = os.getenv("RUN_SEED", "").strip()
         self.run_seed = int(run_seed_raw) if run_seed_raw else None
 
@@ -158,8 +153,7 @@ class Config:
             os.getenv("SAMPLED_DATASET_RUN_SELECTION_MODE", "round_robin").strip().lower()
             or "round_robin"
         )
-        # S7 §A.3: how many requirements one run consumes. Dataset v2 holds 116
-        # and a run is 30 auctions, so the pass is a horizon, not the whole file.
+        # How many requests one run consumes.
         sampled_dataset_pass_limit_raw = os.getenv("SAMPLED_DATASET_PASS_LIMIT", "").strip()
         self.sampled_dataset_pass_limit = (
             int(sampled_dataset_pass_limit_raw) if sampled_dataset_pass_limit_raw else None
@@ -171,13 +165,9 @@ class Config:
             else None
         )
         self.service_generation_timeout = int(os.getenv("SERVICE_GENERATION_TIMEOUT", "180"))
-        # Consumer-side models (S4 §2.1), chosen deliberately rather than inherited:
-        # requirement generation and evaluation both run the executor's model, so the
-        # consumer side is one model. Requirement generation was `openai/gpt-oss-20b`
-        # (hardcoded in service_generator.py); evaluation resolved through an
-        # `openrouter_model` attribute config.py never defined, so its `gpt-4o-mini`
-        # fallback always fired and nobody chose it. Both are explicit and overridable
-        # now, and the collector records them into every collection manifest.
+        # Consumer-side models: request generation and evaluation both run the
+        # executor's model by default. The dataset collection records them in every
+        # collection manifest.
         self.service_generation_model = (
             os.getenv("SERVICE_GENERATION_MODEL", "").strip() or CONSUMER_LLM_DEFAULT
         )
@@ -332,11 +322,9 @@ class Config:
         self.blockchain_llm_override = os.getenv("BLOCKCHAIN_LLM_MODEL", "").strip() or None
         self.service_llm_override = os.getenv("SERVICE_LLM_MODEL", "").strip() or None
 
-        # S7 §A.2 (D2). Sampling for live LLM calls. Both default to "use what the
-        # estimation protocol pinned for this model" — the seed and reasoning
-        # effort S5 sent — because an estimator sampled differently is not the
-        # estimator whose sigma S5 measured. Overrides exist for models the
-        # protocol never pinned, which is the A-series react arms only.
+        # Sampling for live LLM calls. Both default to the block pinned for the
+        # model in agents/common/llm_sampling.py (seed, and reasoning effort or
+        # temperature); the overrides are for models without a pinned block.
         llm_temperature_raw = os.getenv("LLM_TEMPERATURE", "").strip()
         self.llm_temperature_override = float(llm_temperature_raw) if llm_temperature_raw else None
         llm_sampling_seed_raw = os.getenv("LLM_SAMPLING_SEED", "").strip()
@@ -375,8 +363,7 @@ class Config:
         )
         # Consumer-side token pricing (requirement generation + evaluation). Defaults
         # follow the service-LLM prices because the consumer side runs the same model;
-        # override if the two are split. Without these, S4 §3.6 cannot price the
-        # consumer-side model choice and §2.1's cost question stays unanswerable.
+        # override if the two are split.
         self.consumer_llm_input_price_per_1k = float(
             os.getenv("CONSUMER_LLM_INPUT_PRICE_PER_1K", str(self.service_llm_input_price_per_1k))
         )
@@ -401,15 +388,8 @@ class Config:
             "medium": int(os.getenv("SERVICE_MAX_RETRIEVAL_ROUNDS_MEDIUM", "3")),
             "high": int(os.getenv("SERVICE_MAX_RETRIEVAL_ROUNDS_HIGH", "10")),
         }
-        # Passages returned per search, per tier. S4 §3's cap sweep showed the round
-        # count alone is a near-binary knob — two rounds saturate every depth, because
-        # each search already returns rag_retrieval_k passages. The evidence budget a
-        # tier buys is rounds x passages, so the second factor has to move too or the
-        # middle tier cannot sit between the other two.
-        # Executor model per effort tier (S4 §3c). Empty means "every tier uses the
-        # architecture's service_llm", which is the pre-§3c behaviour. Model capability
-        # is a far larger lever than retrieval budget, and it is a realistic effort
-        # decision — a provider choosing a cheaper subcontractor.
+        # Executor model per effort tier. Empty means every tier uses the
+        # architecture's service_llm.
         self.service_llm_by_effort = {
             "low": os.getenv("SERVICE_LLM_LOW", "").strip() or None,
             "medium": os.getenv("SERVICE_LLM_MEDIUM", "").strip() or None,
@@ -420,6 +400,8 @@ class Config:
         self.service_llm_prices_by_effort = {
             "low": {}, "medium": {}, "high": {},
         }
+        # Passages returned per search, per tier: the evidence a tier buys is
+        # rounds x passages.
         self.service_retrieval_k_by_effort = {
             "low": int(os.getenv("SERVICE_RETRIEVAL_K_LOW", str(self.rag_retrieval_k))),
             "medium": int(os.getenv("SERVICE_RETRIEVAL_K_MEDIUM", str(self.rag_retrieval_k))),
@@ -431,14 +413,6 @@ class Config:
         self.environment = os.getenv("ENVIRONMENT", "development")
         self.debug = os.getenv("DEBUG", "true").lower() == "true"
     
-    def is_production(self) -> bool:
-        """Check if running in production environment."""
-        return self.environment.lower() == "production"
-    
-    def is_development(self) -> bool:
-        """Check if running in development environment."""
-        return self.environment.lower() == "development"
-
     def get_initial_service_execution_cost_for_effort(self, effort_tier: str = None) -> float:
         """Return prior execution-cost estimate for the requested effort tier."""
         normalized = str(effort_tier or self.default_effort_tier).strip().lower()
@@ -572,10 +546,8 @@ class ArchitectureConfig:
     enabled_tools: List[str]
     blockchain_llm: str = "openai/gpt-4o-mini"
     service_llm: str = "openai/gpt-4o-mini"
-    # S7 §A.2 (D2): 0, not 0.3. An architecture that forgets to set this must
-    # not sample stochastically by default. Models whose sampling is pinned by
-    # the estimation protocol ignore this and use their recorded block instead
-    # (agents/infrastructure/llm_sampling.py).
+    # Models with a pinned sampling block (agents/common/llm_sampling.py) ignore
+    # this and use their block instead.
     llm_temperature: float = 0.0
 
 
@@ -605,21 +577,6 @@ ARCHITECTURES = {
         service_llm="openai/gpt-5.4-mini",
         llm_temperature=0.0,
     ),
-    "3": ArchitectureConfig(
-        name="Architecture 3",
-        description="LLM Effort-Aware - Performance + effort-history state, LLM reasoning, two-way coupling",
-        state_level=1,
-        reasoning_mode="llm_react",
-        coupling_mode="two_way",
-        prompt_template="3",
-        enabled_tools=["place_bid"],
-        blockchain_llm="openai/gpt-4o-mini",
-        service_llm="openai/gpt-5.4-mini",
-        llm_temperature=0.0,
-    ),
-    # Future architectures will be added here:
-    # "4": ArchitectureConfig(...),
-    # "5": ArchitectureConfig(...),
 }
 
 

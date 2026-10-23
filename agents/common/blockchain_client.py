@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Union
 from aiohttp import ClientTimeout
-from web3 import Web3, AsyncWeb3
+from web3 import AsyncWeb3
 from eth_account import Account
 from eth_utils import to_checksum_address
 
@@ -343,47 +343,6 @@ class BlockchainClient:
                 logger.error(f"Error estimating gas for {contract_name}.{method_name}: {e}")
 
         raise last_error
-    
-    async def deploy_contract(
-        self,
-        bytecode: str,
-        abi: List[Dict],
-        constructor_args: Optional[List] = None,
-        gas_limit: Optional[int] = None
-    ) -> str:
-        """Deploy a new contract."""
-        if not self.account:
-            raise RuntimeError("No account configured for deployment")
-        
-        if not self.w3:
-            raise RuntimeError("Blockchain client not initialized")
-        
-        # Create contract instance
-        contract = self.w3.eth.contract(abi=abi, bytecode=bytecode)
-        
-        # Build deployment transaction
-        transaction = await contract.constructor(
-            *(constructor_args or [])
-        ).build_transaction({
-            'from': self.account.address,
-            'gas': gas_limit or self.config.gas_limit,
-            'gasPrice': await self.get_gas_price(),
-            'nonce': await self.w3.eth.get_transaction_count(self.account.address),
-            'chainId': self.config.chain_id,
-        })
-        
-        # Sign and send transaction
-        signed_txn = self.account.sign_transaction(transaction)
-        tx_hash = await self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
-        
-        # Wait for deployment
-        receipt = await self.wait_for_transaction(tx_hash.hex())
-        
-        if receipt['status'] == 1:
-            logger.info(f"Contract deployed at: {receipt.get('contractAddress')}")
-            return receipt.get('contractAddress')
-        else:
-            raise RuntimeError(f"Contract deployment failed: {receipt}")
     
     async def get_block(self, block_identifier: Union[int, str] = 'latest') -> Dict[str, Any]:
         """Get block information."""

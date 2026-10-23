@@ -23,10 +23,8 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-#: The depth ladder of docs/dataset_v2_spec.md §3, mirrored from
-#: agents.provider.estimation.design_v2.Depth. Depth drives *demanded* retrieval;
-#: the effort tier caps *allowed* retrieval, and that gap is the mechanism
-#: dataset v2 is built to expose.
+#: The designed synthesis depths of the requirement plan. Depth drives *demanded*
+#: retrieval; the effort tier caps *allowed* retrieval.
 DEPTH_LADDER: Dict[str, Dict[str, Any]] = {
     "locate": {
         "demanded_retrieval_rounds": 1,
@@ -80,8 +78,7 @@ DEPTH_LADDER: Dict[str, Dict[str, Any]] = {
 }
 
 #: Whether the evidence a prompt needs sits in one place or has to be assembled.
-#: Carried per requirement by the S3 plan and, until S4 §3's diagnostics, ignored at
-#: generation time — which is part of why one retrieval round sufficed.
+#: Carried per requirement by the plan and stated in the generation prompt.
 DISPERSION_INSTRUCTIONS: Dict[str, str] = {
     "localised": (
         "Evidence placement: each prompt should target detail that sits together in one part of "
@@ -94,10 +91,8 @@ DISPERSION_INSTRUCTIONS: Dict[str, str] = {
     ),
 }
 
-#: The reason S4 §3's pilot showed no tier interaction: the executor answered
-#: canonical papers from prior knowledge, scoring ~63 with no documents at all, so
-#: retrieval had only ~15 points of quality to move. Prompts must demand detail that
-#: cannot be recalled, only looked up.
+#: Prompts must demand detail that cannot be recalled, only looked up: in a pilot the
+#: executor answered well-known papers from prior knowledge, without the documents.
 SPECIFICITY_RULES = """Every prompt must be unanswerable from general familiarity with this
 literature. Someone who has read about this topic but does not have these specific documents open
 must not be able to answer. Demand the kind of detail that only the document carries: reported
@@ -124,7 +119,7 @@ class ServiceGenerator:
         self.service_generation_timeout = max(1, int(getattr(config, "service_generation_timeout", 180)))
         
         # Initialize OpenRouter LLM. The model is config-driven so the consumer-side
-        # choice can be recorded per collection instead of edited in source (S4 §2.1).
+        # choice can be recorded per collection instead of edited in source.
         self.model_name = str(
             getattr(config, "service_generation_model", None) or "openai/gpt-oss-20b"
         )
@@ -136,7 +131,7 @@ class ServiceGenerator:
         )
 
         # Consumer-side spend, accumulated across every generation call this
-        # instance makes. S4 §3.6 prices the consumer-side model choice from these.
+        # instance makes, for the collection manifest.
         self.generation_llm_calls = 0
         self.generation_input_tokens = 0
         self.generation_output_tokens = 0
@@ -446,17 +441,6 @@ class ServiceGenerator:
             "failed": failed
         }
     
-    async def _generate_service_for_pdf(
-        self,
-        pdf_path: Path
-    ) -> Dict[str, Any]:
-        """
-        Generate service description for a single PDF.
-        
-        Backward-compatible wrapper over the PDF-group implementation.
-        """
-        return await self._generate_service_for_pdf_group([pdf_path])
-
     async def _generate_service_for_pdf_group(
         self,
         pdf_paths: List[Path]
@@ -583,16 +567,6 @@ class ServiceGenerator:
         logger.info(f"  Read abstract ({len(abstract)} chars)")
         return abstract
     
-    async def _generate_prompts_from_abstract(
-        self,
-        abstract: str,
-        paper_name: str
-    ) -> List[str]:
-        """Generate literature review prompts from a single-paper abstract."""
-        return await self._generate_prompts_from_abstracts(
-            [{"source_id": paper_name, "abstract": abstract}]
-        )
-
     @staticmethod
     def _normalize_prompt_source_ids(prompts: List[str], source_ids: List[str]) -> List[str]:
         """Replace simple Paper N references with configured source IDs."""
@@ -745,7 +719,7 @@ Generate 5 specific questions for this paper's literature review:"""
     
     
     # ------------------------------------------------------------------
-    # Plan-driven, depth-conditioned prompt generation (S4 §1b)
+    # Plan-driven, depth-conditioned prompt generation
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -934,11 +908,11 @@ Generate the {prompt_count} prompts at {depth} depth:"""
     ) -> Dict[str, Any]:
         """Generate one plan slot's prompts under depth, breadth, and length control.
 
-        Length is enforced independently of depth (S4 §1b): the realized total is
+        Length is enforced independently of depth: the realized total is
         measured after every attempt and regenerated while it lands outside the
         band, so a reconcile slot in the 1800-char band and a locate slot in the
         4200-char band both exist. Returns the prompts plus the realized values
-        S4 §1c records and S5 needs.
+        recorded with each requirement.
         """
         if not paper_abstracts:
             raise ValueError("paper_abstracts cannot be empty")
@@ -1136,7 +1110,3 @@ Generate the {prompt_count} prompts at {depth} depth:"""
             f"What are the broader implications or applications of the research in {source_id}?"
         ]
     
-    def reset_processed(self) -> None:
-        """Clear the set of processed PDFs."""
-        self.processed_pdfs.clear()
-        logger.info("Cleared processed PDFs tracking")

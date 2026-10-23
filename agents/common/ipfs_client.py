@@ -309,61 +309,6 @@ class IPFSClient:
         
         return results
     
-    async def create_service_description(
-        self,
-        service: ServiceDescription,
-        attachment_files: Optional[List[Union[str, Path]]] = None
-    ) -> IPFSUploadResult:
-        """
-        Create and pin a complete service description with optional attachments.
-        
-        This is the main method for consumers creating auctions:
-        1. Uploads any attachment files first
-        2. Adds attachment CIDs to service description
-        3. Uploads the complete service description JSON
-        
-        Args:
-            service: ServiceDescription object with service details
-            attachment_files: Optional list of files to attach (max 5)
-            
-        Returns:
-            IPFSUploadResult with CID of the service description JSON
-        """
-        try:
-            # Upload attachments first if provided
-            if attachment_files:
-                logger.info(f"Uploading {len(attachment_files)} attachments...")
-                attachment_results = await self.pin_files(attachment_files)
-                
-                # Collect successful CIDs
-                attachment_cids = []
-                for result in attachment_results:
-                    if result.success and result.cid:
-                        attachment_cids.append(result.cid)
-                    else:
-                        logger.warning(f"Failed to upload attachment: {result.error}")
-                
-                if attachment_cids:
-                    service.attachment_cids = attachment_cids
-            
-            # Convert service description to dict and upload
-            service_data = service.to_dict()
-            
-            result = await self.pin_json(
-                data=service_data,
-                name=f"service-{service.title[:30]}",
-                metadata={"type": "service_description", "complexity": service.complexity}
-            )
-            
-            if result.success:
-                logger.info(f"✅ Service description created: {result.cid}")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error creating service description: {e}")
-            return IPFSUploadResult(success=False, error=str(e))
-    
     async def fetch(
         self,
         cid: str,
@@ -465,21 +410,6 @@ class IPFSClient:
             logger.error(f"Error downloading file {cid}: {e}")
             return False
     
-    def get_gateway_url(self, cid: str, gateway_index: int = 0) -> str:
-        """
-        Get a public gateway URL for a CID.
-        
-        Args:
-            cid: The IPFS content identifier
-            gateway_index: Which gateway to use (0 = Pinata, preferred)
-            
-        Returns:
-            Full URL to access the content
-        """
-        gateway = IPFS_GATEWAYS[gateway_index % len(IPFS_GATEWAYS)]
-        return f"{gateway}{cid}"
-
-
 # Convenience function for quick access
 def create_ipfs_client() -> IPFSClient:
     """Create an IPFSClient with credentials from environment."""

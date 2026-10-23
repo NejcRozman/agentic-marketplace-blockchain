@@ -35,8 +35,7 @@ class _UsageAccumulator:
     """Token usage and cost for one `evaluate()` call.
 
     One evaluation is `len(responses) + 1` LLM calls, so the judge is a real cost
-    line, not a rounding error — and S4 §3.6 has to price it before the consumer
-    side's model choice can be called affordable. Passed explicitly down the call
+    line. Passed explicitly down the call
     chain rather than kept on the evaluator, so concurrent evaluations on one
     instance cannot mix their totals.
     """
@@ -81,7 +80,7 @@ class ServiceEvaluator:
             "Content-Type": "application/json",
         }
         # Read directly: a missing `openrouter_model` must fail loudly rather than
-        # silently fall back to a model nobody chose (S4 §2.1).
+        # silently fall back to a model nobody chose.
         self._model = config.openrouter_model
         self._input_price_per_1k = float(getattr(config, "consumer_llm_input_price_per_1k", 0.0))
         self._output_price_per_1k = float(getattr(config, "consumer_llm_output_price_per_1k", 0.0))

@@ -530,13 +530,6 @@ class CostTracker:
         """
         return self.service_execution_history.copy()
 
-    def get_execution_cost_history_by_effort(self) -> dict:
-        """Get per-effort execution cost histories."""
-        return {
-            effort: history.copy()
-            for effort, history in self._execution_cost_history_by_effort.items()
-        }
-
     def get_execution_counts_by_effort(self) -> dict:
         """Get number of completed services by effort level."""
         return {

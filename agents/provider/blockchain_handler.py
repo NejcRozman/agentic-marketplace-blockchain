@@ -38,7 +38,7 @@ try:
     from ..common.feedback_auth import generate_feedback_auth, verify_feedback_auth_format
     from ..common.ipfs_client import IPFSClient
     from ..common.cost_tracker import CostTracker, LLMCostCallback
-    from ..common.executor_tier_dataset_sampler import ExecutorTierDatasetSampler
+    from ..common.dataset_sampler import DatasetSampler
     from ..common.commitment_store import CommitmentStore
     from ..common.reputation_lookup import reputation_to_float
     from ..common.seeding import agent_rng
@@ -57,7 +57,7 @@ except ImportError:
     from common.feedback_auth import generate_feedback_auth, verify_feedback_auth_format
     from common.ipfs_client import IPFSClient
     from common.cost_tracker import CostTracker, LLMCostCallback
-    from common.executor_tier_dataset_sampler import ExecutorTierDatasetSampler
+    from common.dataset_sampler import DatasetSampler
     from common.commitment_store import CommitmentStore
     from common.reputation_lookup import reputation_to_float
     from common.seeding import agent_rng
@@ -349,7 +349,7 @@ class BlockchainHandler:
             )
         else:
             self._cost_estimator = cost_estimators.RegressionCostEstimator(mode=estimator_mode)
-        self._estimator_sampler: Optional[ExecutorTierDatasetSampler] = None
+        self._estimator_sampler: Optional[DatasetSampler] = None
 
         # S7 §A.2 (D2): sampling comes from the estimation protocol's pinned block
         # for this model — seed plus reasoning effort, or seed plus temperature,
@@ -2033,7 +2033,7 @@ Analyze these auctions and decide which to bid on."""
         """
         auction = state.get("_estimator_auction") or {}
         cid = auction.get("service_description_cid")
-        reference = ExecutorTierDatasetSampler.parse_dataset_service_cid(cid or "")
+        reference = DatasetSampler.parse_dataset_service_cid(cid or "")
         if reference is None:
             return None
 
@@ -2049,10 +2049,10 @@ Analyze these auctions and decide which to bid on."""
                 logger.debug(f"Could not load features for {requirement_id}: {e}")
         return requirement_id
 
-    def _get_estimator_sampler(self) -> ExecutorTierDatasetSampler:
+    def _get_estimator_sampler(self) -> DatasetSampler:
         """Dataset access for feature extraction, cached."""
         if getattr(self, "_estimator_sampler", None) is None:
-            self._estimator_sampler = ExecutorTierDatasetSampler(
+            self._estimator_sampler = DatasetSampler(
                 str(getattr(self.config, "sampled_dataset_dir", "")),
                 getattr(self.config, "sampled_dataset_id", None),
             )
@@ -2606,7 +2606,7 @@ Analyze these auctions and decide which to bid on."""
             for auction in eligible_active_auctions:
                 cid = auction.get("service_description_cid")
                 if cid:
-                    sampled_reference = ExecutorTierDatasetSampler.parse_dataset_service_cid(cid)
+                    sampled_reference = DatasetSampler.parse_dataset_service_cid(cid)
                     if sampled_reference is not None:
                         auction["service_requirements"] = {
                             "execution_mode": "sampled_dataset",

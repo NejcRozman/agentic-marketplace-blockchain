@@ -123,94 +123,6 @@ class ContractABIs:
         
         return self._abis[contract_name]
     
-    def get_bytecode(self, contract_name: str) -> str:
-        """
-        Get the bytecode for a specific contract (for deployment).
-        
-        Args:
-            contract_name: Name of the contract
-            
-        Returns:
-            Contract bytecode as hex string
-            
-        Raises:
-            ValueError: If contract bytecode not found
-        """
-        if not self._loaded:
-            self.load_all()
-        
-        if contract_name not in self._bytecodes:
-            raise ValueError(f"Bytecode for {contract_name} not found")
-        
-        return self._bytecodes[contract_name]
-    
-    def get_function_selector(self, contract_name: str, function_name: str) -> Optional[str]:
-        """
-        Get the function selector (4-byte signature) for a specific function.
-        
-        Args:
-            contract_name: Name of the contract
-            function_name: Name of the function
-            
-        Returns:
-            Function selector as hex string, or None if not found
-        """
-        abi = self.get_abi(contract_name)
-        
-        for entry in abi:
-            if entry.get('type') == 'function' and entry.get('name') == function_name:
-                # Function selector is first 4 bytes of keccak256(signature)
-                # Web3 will handle this, but we can return the function name for reference
-                return function_name
-        
-        return None
-    
-    def get_event_signature(self, contract_name: str, event_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the event signature for a specific event.
-        
-        Args:
-            contract_name: Name of the contract
-            event_name: Name of the event
-            
-        Returns:
-            Event ABI entry, or None if not found
-        """
-        abi = self.get_abi(contract_name)
-        
-        for entry in abi:
-            if entry.get('type') == 'event' and entry.get('name') == event_name:
-                return entry
-        
-        return None
-    
-    def list_functions(self, contract_name: str) -> List[str]:
-        """
-        List all function names in a contract.
-        
-        Args:
-            contract_name: Name of the contract
-            
-        Returns:
-            List of function names
-        """
-        abi = self.get_abi(contract_name)
-        return [entry['name'] for entry in abi if entry.get('type') == 'function']
-    
-    def list_events(self, contract_name: str) -> List[str]:
-        """
-        List all event names in a contract.
-        
-        Args:
-            contract_name: Name of the contract
-            
-        Returns:
-            List of event names
-        """
-        abi = self.get_abi(contract_name)
-        return [entry['name'] for entry in abi if entry.get('type') == 'event']
-
-
 # Global instance for easy access
 contract_abis = ContractABIs()
 
@@ -231,6 +143,3 @@ def get_reputation_registry_abi() -> List[Dict[str, Any]]:
     return contract_abis.get_abi("IReputationRegistry")
 
 
-def load_all_abis() -> bool:
-    """Load all contract ABIs. Returns True if successful."""
-    return contract_abis.load_all()

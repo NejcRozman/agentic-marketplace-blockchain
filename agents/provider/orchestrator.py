@@ -33,7 +33,7 @@ from agents.provider.blockchain_handler import BlockchainHandler
 from agents.provider.service_executor import ServiceExecutor
 from agents.common.ipfs_client import IPFSClient
 from agents.common.cost_tracker import CostTracker
-from agents.common.executor_tier_dataset_sampler import ExecutorTierDatasetSampler
+from agents.common.dataset_sampler import DatasetSampler
 from agents.config import Config
 
 logger = logging.getLogger(__name__)
@@ -179,7 +179,7 @@ class Orchestrator:
         #: Jobs abandoned because dataset v2 had no run to replay. Must be zero
         #: in any run whose numbers are used (S7 §F.1).
         self.replay_failures = 0
-        self._sampled_dataset_sampler: Optional[ExecutorTierDatasetSampler] = None
+        self._sampled_dataset_sampler: Optional[DatasetSampler] = None
         
         logger.info(f"Orchestrator initialized for agent {self.config.agent_id}")
     
@@ -189,7 +189,7 @@ class Orchestrator:
         await self.blockchain_handler.initialize()
         logger.info("✓ Orchestrator ready")
 
-    def _get_sampled_dataset_sampler(self) -> ExecutorTierDatasetSampler:
+    def _get_sampled_dataset_sampler(self) -> DatasetSampler:
         """Return cached dataset sampler for sampled execution mode."""
         if self._sampled_dataset_sampler is not None:
             return self._sampled_dataset_sampler
@@ -211,7 +211,7 @@ class Orchestrator:
             except (TypeError, ValueError):
                 resolved_seed = int(base_seed)
 
-        self._sampled_dataset_sampler = ExecutorTierDatasetSampler(
+        self._sampled_dataset_sampler = DatasetSampler(
             dataset_dir,
             dataset_id,
             run_selection_mode=run_selection_mode,
@@ -352,7 +352,7 @@ class Orchestrator:
         logger.info(f"📥 Fetching requirements for job {job.auction_id} from {job.service_cid}")
         
         try:
-            sampled_reference = ExecutorTierDatasetSampler.parse_dataset_service_cid(job.service_cid)
+            sampled_reference = DatasetSampler.parse_dataset_service_cid(job.service_cid)
             if sampled_reference is not None:
                 job.service_requirements = {
                     "execution_mode": "sampled_dataset",
