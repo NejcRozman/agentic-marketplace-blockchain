@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""Fork Sepolia once, then never again (S7 §A.6 P5 / §A.6.2).
+"""Build the chain snapshot the runs start from: Sepolia's ERC-8004 registries, forked once.
 
-Every Anvil in the campaign currently forks Sepolia over Infura. Eight
-concurrent runs is eight times the fetch rate against a rate limit the code
-already works around, and the evidence that nothing was being reused is on
-disk: ``~/.foundry/cache/rpc/sepolia/`` accumulated **4,062 block directories**,
-one per unpinned fork head, none of them ever hit twice.
-
-This script forks **once**, drives the ordinary Phase-1 setup so that every
-account and contract the experiment touches is pulled into local state — above
-all the two ERC-8004 registries, which are the only reason the fork exists at
-all (§A.6.2) — and dumps the result. Runs then start with ``--load-state`` and
-no ``--fork-url``, which makes them:
+This script forks Sepolia once (it needs an Infura key), drives the ordinary
+setup so that every account and contract the experiment touches is pulled into
+local state, above all the two ERC-8004 registries, and dumps the result. Runs
+then start with ``--load-state`` and no ``--fork-url``, which makes them:
 
 * **offline** — zero external RPC calls on the run path, so Infura cannot
   throttle, rate-limit or fail a confirmatory run;
@@ -26,14 +19,15 @@ reimplemented or stubbed.
 
 **Where it stops matters.** Setup runs through deploy, funding and agent
 registration, and then stops. If it ran auctions, their reputation and cost
-history would be baked into the starting state of all 720 runs.
+history would be baked into the starting state of every run.
 
-Usage::
+Usage, with a condition config from which ``blockchain.state_snapshot`` is removed
+(a snapshot is not built from a snapshot)::
 
-    python experiments/scripts/build_chain_snapshot.py experiments/configs/<cfg>.yaml \\
+    python experiments/chain/build_chain_snapshot.py <config>.yaml \\
         --output experiments/chain/sepolia_registries.json
 
-Then in the config::
+Then in experiments/conditions/base.yaml::
 
     blockchain:
       state_snapshot: "experiments/chain/sepolia_registries.json"
@@ -374,7 +368,7 @@ async def build(config_path: Path, output: Path, run_index: int) -> Path:
     logger.info("  sha256: %s", digest)
     logger.info("  manifest: %s", manifest_path)
     logger.info("")
-    logger.info("Add to every S7 config:")
+    logger.info("Set in experiments/conditions/base.yaml:")
     logger.info("  blockchain:")
     try:
         shown = output.resolve().relative_to(REPO_ROOT)

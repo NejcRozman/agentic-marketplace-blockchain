@@ -1,0 +1,1411 @@
+{
+  "design_id": "v2",
+  "corpus": "utils/files/v2",
+  "summary": {
+    "n_requirements": 30,
+    "n_dev": 20,
+    "n_heldout": 10,
+    "n_pairs": 10,
+    "n_pairs_feature_identical": 10,
+    "depth_counts": {
+      "locate": 9,
+      "enumerate": 7,
+      "contrast": 8,
+      "reconcile": 6
+    },
+    "degenerate_features": [],
+    "depth_feature_correlations": {
+      "total_prompt_chars": -0.06868521823990058,
+      "source_pdf_count": 0.08967714245273983,
+      "prompt_count": 0.19988726027934797,
+      "mean_papers_per_prompt": -0.1092961543910196,
+      "wide_prompt_count": -0.03591101613768263
+    },
+    "breadth_length_correlation": -0.03599224450687313,
+    "documents_used": 30,
+    "split_document_overlap": 0
+  },
+  "slots": [
+    {
+      "slot_id": "pair_01a",
+      "split": "dev",
+      "pair_id": "pair_01",
+      "documents": [
+        "Luu_ScalingBlockchainSharding",
+        "Sguanci_RollupComparisonFramework"
+      ],
+      "source_pdf_count": 2,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "blockchain_scaling"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 2.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_01",
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_01b",
+      "split": "dev",
+      "pair_id": "pair_01",
+      "documents": [
+        "Luu_ScalingBlockchainSharding",
+        "Sguanci_RollupComparisonFramework"
+      ],
+      "source_pdf_count": 2,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "blockchain_scaling"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 2.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "reconcile",
+        "demanded_synthesis_rank": 4,
+        "demanded_retrieval_rounds": 10,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_01",
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_02a",
+      "split": "dev",
+      "pair_id": "pair_02",
+      "documents": [
+        "Li_RagOrLongContext",
+        "Li_LaraNoSilverBullet",
+        "Sguanci_RollupComparisonFramework"
+      ],
+      "source_pdf_count": 3,
+      "prompt_count": 6,
+      "prompt_breadths": [
+        3,
+        3,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "blockchain_scaling",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 3.0,
+        "prompt_count": 6.0,
+        "mean_papers_per_prompt": 2.0,
+        "wide_prompt_count": 2.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "enumerate",
+        "demanded_synthesis_rank": 2,
+        "demanded_retrieval_rounds": 3,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_02",
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_02b",
+      "split": "dev",
+      "pair_id": "pair_02",
+      "documents": [
+        "Li_RagOrLongContext",
+        "Li_LaraNoSilverBullet",
+        "Sguanci_RollupComparisonFramework"
+      ],
+      "source_pdf_count": 3,
+      "prompt_count": 6,
+      "prompt_breadths": [
+        3,
+        3,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "blockchain_scaling",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 3.0,
+        "prompt_count": 6.0,
+        "mean_papers_per_prompt": 2.0,
+        "wide_prompt_count": 2.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "contrast",
+        "demanded_synthesis_rank": 3,
+        "demanded_retrieval_rounds": 6,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_02",
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_03a",
+      "split": "dev",
+      "pair_id": "pair_03",
+      "documents": [
+        "Wei_EmergentAbilitiesLlms",
+        "Schaeffer_EmergentAbilitiesMirage",
+        "Turpin_UnfaithfulChainOfThought",
+        "Lewis_RetrievalAugmentedGeneration"
+      ],
+      "source_pdf_count": 4,
+      "prompt_count": 8,
+      "prompt_breadths": [
+        3,
+        4,
+        3,
+        4,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "llm_emergence_reasoning",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 4.0,
+        "prompt_count": 8.0,
+        "mean_papers_per_prompt": 2.5,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_03",
+        "split": "dev",
+        "source_areas": [
+          "llm_emergence_reasoning",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_03b",
+      "split": "dev",
+      "pair_id": "pair_03",
+      "documents": [
+        "Wei_EmergentAbilitiesLlms",
+        "Schaeffer_EmergentAbilitiesMirage",
+        "Turpin_UnfaithfulChainOfThought",
+        "Lewis_RetrievalAugmentedGeneration"
+      ],
+      "source_pdf_count": 4,
+      "prompt_count": 8,
+      "prompt_breadths": [
+        3,
+        4,
+        3,
+        4,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "llm_emergence_reasoning",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 4.0,
+        "prompt_count": 8.0,
+        "mean_papers_per_prompt": 2.5,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "contrast",
+        "demanded_synthesis_rank": 3,
+        "demanded_retrieval_rounds": 6,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_03",
+        "split": "dev",
+        "source_areas": [
+          "llm_emergence_reasoning",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_04a",
+      "split": "dev",
+      "pair_id": "pair_04",
+      "documents": [
+        "Mcmahan_FederatedAveraging",
+        "Zhu_DeepLeakageFromGradients",
+        "Geiping_InvertingGradientsPrivacy",
+        "Lewis_RetrievalAugmentedGeneration",
+        "Barnett_SevenFailurePointsRag"
+      ],
+      "source_pdf_count": 5,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "federated_privacy",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 5.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "enumerate",
+        "demanded_synthesis_rank": 2,
+        "demanded_retrieval_rounds": 3,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 2,
+        "shares_documents_with": "pair_04",
+        "split": "dev",
+        "source_areas": [
+          "federated_privacy",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_04b",
+      "split": "dev",
+      "pair_id": "pair_04",
+      "documents": [
+        "Mcmahan_FederatedAveraging",
+        "Zhu_DeepLeakageFromGradients",
+        "Geiping_InvertingGradientsPrivacy",
+        "Lewis_RetrievalAugmentedGeneration",
+        "Barnett_SevenFailurePointsRag"
+      ],
+      "source_pdf_count": 5,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "federated_privacy",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 5.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "reconcile",
+        "demanded_synthesis_rank": 4,
+        "demanded_retrieval_rounds": 10,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 2,
+        "shares_documents_with": "pair_04",
+        "split": "dev",
+        "source_areas": [
+          "federated_privacy",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_05a",
+      "split": "dev",
+      "pair_id": "pair_05",
+      "documents": [
+        "Wei_ChainOfThoughtPrompting",
+        "Turpin_UnfaithfulChainOfThought"
+      ],
+      "source_pdf_count": 2,
+      "prompt_count": 6,
+      "prompt_breadths": [
+        2,
+        2,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "llm_emergence_reasoning"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 2.0,
+        "prompt_count": 6.0,
+        "mean_papers_per_prompt": 1.6666666666666667,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_05",
+        "split": "dev",
+        "source_areas": [
+          "llm_emergence_reasoning"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_05b",
+      "split": "dev",
+      "pair_id": "pair_05",
+      "documents": [
+        "Wei_ChainOfThoughtPrompting",
+        "Turpin_UnfaithfulChainOfThought"
+      ],
+      "source_pdf_count": 2,
+      "prompt_count": 6,
+      "prompt_breadths": [
+        2,
+        2,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "llm_emergence_reasoning"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 2.0,
+        "prompt_count": 6.0,
+        "mean_papers_per_prompt": 1.6666666666666667,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "reconcile",
+        "demanded_synthesis_rank": 4,
+        "demanded_retrieval_rounds": 10,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_05",
+        "split": "dev",
+        "source_areas": [
+          "llm_emergence_reasoning"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_06a",
+      "split": "dev",
+      "pair_id": "pair_06",
+      "documents": [
+        "Luu_ScalingBlockchainSharding",
+        "Sguanci_RollupComparisonFramework",
+        "Motepalli_DecentralizedSequencersRollups"
+      ],
+      "source_pdf_count": 3,
+      "prompt_count": 8,
+      "prompt_breadths": [
+        3,
+        3,
+        3,
+        3,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "blockchain_scaling"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 3.0,
+        "prompt_count": 8.0,
+        "mean_papers_per_prompt": 2.25,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "enumerate",
+        "demanded_synthesis_rank": 2,
+        "demanded_retrieval_rounds": 3,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 2,
+        "shares_documents_with": "pair_06",
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_06b",
+      "split": "dev",
+      "pair_id": "pair_06",
+      "documents": [
+        "Luu_ScalingBlockchainSharding",
+        "Sguanci_RollupComparisonFramework",
+        "Motepalli_DecentralizedSequencersRollups"
+      ],
+      "source_pdf_count": 3,
+      "prompt_count": 8,
+      "prompt_breadths": [
+        3,
+        3,
+        3,
+        3,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "blockchain_scaling"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 3.0,
+        "prompt_count": 8.0,
+        "mean_papers_per_prompt": 2.25,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "contrast",
+        "demanded_synthesis_rank": 3,
+        "demanded_retrieval_rounds": 6,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 2,
+        "shares_documents_with": "pair_06",
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_07a",
+      "split": "dev",
+      "pair_id": "pair_07",
+      "documents": [
+        "Li_RagOrLongContext",
+        "Li_LaraNoSilverBullet",
+        "Luu_ScalingBlockchainSharding",
+        "Amiri_SharperPermissionedSharding"
+      ],
+      "source_pdf_count": 4,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "blockchain_scaling",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 4.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_07",
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_07b",
+      "split": "dev",
+      "pair_id": "pair_07",
+      "documents": [
+        "Li_RagOrLongContext",
+        "Li_LaraNoSilverBullet",
+        "Luu_ScalingBlockchainSharding",
+        "Amiri_SharperPermissionedSharding"
+      ],
+      "source_pdf_count": 4,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "blockchain_scaling",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 4.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "contrast",
+        "demanded_synthesis_rank": 3,
+        "demanded_retrieval_rounds": 6,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_07",
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_08a",
+      "split": "heldout",
+      "pair_id": "pair_08",
+      "documents": [
+        "He_NeuralCollaborativeFiltering",
+        "Rendle_NcfVsMatrixFactorization"
+      ],
+      "source_pdf_count": 2,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        2,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "recsys_ir_reproducibility"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 2.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.75,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_08",
+        "split": "heldout",
+        "source_areas": [
+          "recsys_ir_reproducibility"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_08b",
+      "split": "heldout",
+      "pair_id": "pair_08",
+      "documents": [
+        "He_NeuralCollaborativeFiltering",
+        "Rendle_NcfVsMatrixFactorization"
+      ],
+      "source_pdf_count": 2,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        2,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "recsys_ir_reproducibility"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 2.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.75,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "reconcile",
+        "demanded_synthesis_rank": 4,
+        "demanded_retrieval_rounds": 10,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_08",
+        "split": "heldout",
+        "source_areas": [
+          "recsys_ir_reproducibility"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_09a",
+      "split": "heldout",
+      "pair_id": "pair_09",
+      "documents": [
+        "Shinn_ReflexionVerbalReinforcement",
+        "Huang_LlmsCannotSelfCorrect",
+        "Dacrema_TroublingReproducibilityRecsys"
+      ],
+      "source_pdf_count": 3,
+      "prompt_count": 6,
+      "prompt_breadths": [
+        3,
+        3,
+        3,
+        3,
+        1,
+        2
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "agentic_llm_systems",
+        "recsys_ir_reproducibility"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 3.0,
+        "prompt_count": 6.0,
+        "mean_papers_per_prompt": 2.5,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "enumerate",
+        "demanded_synthesis_rank": 2,
+        "demanded_retrieval_rounds": 3,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_09",
+        "split": "heldout",
+        "source_areas": [
+          "agentic_llm_systems",
+          "recsys_ir_reproducibility"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_09b",
+      "split": "heldout",
+      "pair_id": "pair_09",
+      "documents": [
+        "Shinn_ReflexionVerbalReinforcement",
+        "Huang_LlmsCannotSelfCorrect",
+        "Dacrema_TroublingReproducibilityRecsys"
+      ],
+      "source_pdf_count": 3,
+      "prompt_count": 6,
+      "prompt_breadths": [
+        3,
+        3,
+        3,
+        3,
+        1,
+        2
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "agentic_llm_systems",
+        "recsys_ir_reproducibility"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 3.0,
+        "prompt_count": 6.0,
+        "mean_papers_per_prompt": 2.5,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "contrast",
+        "demanded_synthesis_rank": 3,
+        "demanded_retrieval_rounds": 6,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": "pair_09",
+        "split": "heldout",
+        "source_areas": [
+          "agentic_llm_systems",
+          "recsys_ir_reproducibility"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_10a",
+      "split": "heldout",
+      "pair_id": "pair_10",
+      "documents": [
+        "Madaan_SelfRefineIterativeFeedback",
+        "Huang_LlmsCannotSelfCorrect",
+        "Smit_ShouldWeBeGoingMad",
+        "Shinn_ReflexionVerbalReinforcement"
+      ],
+      "source_pdf_count": 4,
+      "prompt_count": 8,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "agentic_llm_systems"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 4.0,
+        "prompt_count": 8.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 2,
+        "shares_documents_with": "pair_10",
+        "split": "heldout",
+        "source_areas": [
+          "agentic_llm_systems"
+        ]
+      }
+    },
+    {
+      "slot_id": "pair_10b",
+      "split": "heldout",
+      "pair_id": "pair_10",
+      "documents": [
+        "Madaan_SelfRefineIterativeFeedback",
+        "Huang_LlmsCannotSelfCorrect",
+        "Smit_ShouldWeBeGoingMad",
+        "Shinn_ReflexionVerbalReinforcement"
+      ],
+      "source_pdf_count": 4,
+      "prompt_count": 8,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "agentic_llm_systems"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 4.0,
+        "prompt_count": 8.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "contrast",
+        "demanded_synthesis_rank": 3,
+        "demanded_retrieval_rounds": 6,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 2,
+        "shares_documents_with": "pair_10",
+        "split": "heldout",
+        "source_areas": [
+          "agentic_llm_systems"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_01",
+      "split": "dev",
+      "pair_id": null,
+      "documents": [
+        "Huang_SpChainShardSecurity",
+        "Sguanci_RollupComparisonFramework"
+      ],
+      "source_pdf_count": 2,
+      "prompt_count": 3,
+      "prompt_breadths": [
+        2,
+        2,
+        1
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "blockchain_scaling"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 2.0,
+        "prompt_count": 3.0,
+        "mean_papers_per_prompt": 1.6666666666666667,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 0,
+        "shares_documents_with": null,
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_02",
+      "split": "dev",
+      "pair_id": null,
+      "documents": [
+        "Wei_ChainOfThoughtPrompting",
+        "Turpin_UnfaithfulChainOfThought",
+        "Lewis_RetrievalAugmentedGeneration",
+        "Barnett_SevenFailurePointsRag",
+        "Liu_LostInTheMiddle"
+      ],
+      "source_pdf_count": 5,
+      "prompt_count": 8,
+      "prompt_breadths": [
+        3,
+        4,
+        3,
+        4,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "llm_emergence_reasoning",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 5.0,
+        "prompt_count": 8.0,
+        "mean_papers_per_prompt": 2.5,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "enumerate",
+        "demanded_synthesis_rank": 2,
+        "demanded_retrieval_rounds": 3,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": null,
+        "split": "dev",
+        "source_areas": [
+          "llm_emergence_reasoning",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_03",
+      "split": "dev",
+      "pair_id": null,
+      "documents": [
+        "Wei_ChainOfThoughtPrompting",
+        "Turpin_UnfaithfulChainOfThought",
+        "Jiang_LongRagLongContext",
+        "Mcmahan_FederatedAveraging",
+        "Kairouz_AdvancesOpenProblemsFl",
+        "Bonawitz_PracticalSecureAggregation",
+        "Zhu_DeepLeakageFromGradients",
+        "Geiping_InvertingGradientsPrivacy"
+      ],
+      "source_pdf_count": 8,
+      "prompt_count": 5,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2,
+        1
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "federated_privacy",
+        "llm_emergence_reasoning",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 8.0,
+        "prompt_count": 5.0,
+        "mean_papers_per_prompt": 1.4,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "contrast",
+        "demanded_synthesis_rank": 3,
+        "demanded_retrieval_rounds": 6,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 3,
+        "shares_documents_with": null,
+        "split": "dev",
+        "source_areas": [
+          "federated_privacy",
+          "llm_emergence_reasoning",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_04",
+      "split": "dev",
+      "pair_id": null,
+      "documents": [
+        "Wei_ChainOfThoughtPrompting",
+        "Turpin_UnfaithfulChainOfThought",
+        "Geiping_InvertingGradientsPrivacy",
+        "Luu_ScalingBlockchainSharding"
+      ],
+      "source_pdf_count": 4,
+      "prompt_count": 10,
+      "prompt_breadths": [
+        3,
+        4,
+        1,
+        2,
+        1,
+        2,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "blockchain_scaling",
+        "federated_privacy",
+        "llm_emergence_reasoning"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 4.0,
+        "prompt_count": 10.0,
+        "mean_papers_per_prompt": 1.9,
+        "wide_prompt_count": 2.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "reconcile",
+        "demanded_synthesis_rank": 4,
+        "demanded_retrieval_rounds": 10,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": null,
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling",
+          "federated_privacy",
+          "llm_emergence_reasoning"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_05",
+      "split": "dev",
+      "pair_id": null,
+      "documents": [
+        "Huang_SpChainShardSecurity",
+        "Sguanci_RollupComparisonFramework",
+        "Motepalli_DecentralizedSequencersRollups",
+        "Wei_EmergentAbilitiesLlms",
+        "Schaeffer_EmergentAbilitiesMirage",
+        "Wei_ChainOfThoughtPrompting",
+        "Turpin_UnfaithfulChainOfThought"
+      ],
+      "source_pdf_count": 7,
+      "prompt_count": 7,
+      "prompt_breadths": [
+        3,
+        4,
+        3,
+        4,
+        1,
+        2,
+        1
+      ],
+      "target_prompt_chars": 3000,
+      "areas": [
+        "blockchain_scaling",
+        "llm_emergence_reasoning"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 3000.0,
+        "source_pdf_count": 7.0,
+        "prompt_count": 7.0,
+        "mean_papers_per_prompt": 2.5714285714285716,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 2,
+        "shares_documents_with": null,
+        "split": "dev",
+        "source_areas": [
+          "blockchain_scaling",
+          "llm_emergence_reasoning"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_06",
+      "split": "dev",
+      "pair_id": null,
+      "documents": [
+        "Wei_ChainOfThoughtPrompting",
+        "Turpin_UnfaithfulChainOfThought",
+        "Lewis_RetrievalAugmentedGeneration"
+      ],
+      "source_pdf_count": 3,
+      "prompt_count": 4,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "llm_emergence_reasoning",
+        "rag_long_context"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 3.0,
+        "prompt_count": 4.0,
+        "mean_papers_per_prompt": 1.5,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "enumerate",
+        "demanded_synthesis_rank": 2,
+        "demanded_retrieval_rounds": 3,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": null,
+        "split": "dev",
+        "source_areas": [
+          "llm_emergence_reasoning",
+          "rag_long_context"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_07",
+      "split": "heldout",
+      "pair_id": null,
+      "documents": [
+        "Dacrema_WorryingAnalysisNeuralRecsys",
+        "Dacrema_TroublingReproducibilityRecsys"
+      ],
+      "source_pdf_count": 2,
+      "prompt_count": 3,
+      "prompt_breadths": [
+        2,
+        2,
+        1
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "recsys_ir_reproducibility"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 2.0,
+        "prompt_count": 3.0,
+        "mean_papers_per_prompt": 1.6666666666666667,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "locate",
+        "demanded_synthesis_rank": 1,
+        "demanded_retrieval_rounds": 1,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 0,
+        "shares_documents_with": null,
+        "split": "heldout",
+        "source_areas": [
+          "recsys_ir_reproducibility"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_08",
+      "split": "heldout",
+      "pair_id": null,
+      "documents": [
+        "Madaan_SelfRefineIterativeFeedback",
+        "Shinn_ReflexionVerbalReinforcement",
+        "Huang_LlmsCannotSelfCorrect",
+        "He_NeuralCollaborativeFiltering",
+        "Rendle_NcfVsMatrixFactorization"
+      ],
+      "source_pdf_count": 5,
+      "prompt_count": 8,
+      "prompt_breadths": [
+        3,
+        4,
+        3,
+        4,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 4200,
+      "areas": [
+        "agentic_llm_systems",
+        "recsys_ir_reproducibility"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 4200.0,
+        "source_pdf_count": 5.0,
+        "prompt_count": 8.0,
+        "mean_papers_per_prompt": 2.5,
+        "wide_prompt_count": 4.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "enumerate",
+        "demanded_synthesis_rank": 2,
+        "demanded_retrieval_rounds": 3,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": false,
+        "n_conflict_pairs": 3,
+        "shares_documents_with": null,
+        "split": "heldout",
+        "source_areas": [
+          "agentic_llm_systems",
+          "recsys_ir_reproducibility"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_09",
+      "split": "heldout",
+      "pair_id": null,
+      "documents": [
+        "He_NeuralCollaborativeFiltering",
+        "Rendle_NcfVsMatrixFactorization",
+        "Dacrema_WorryingAnalysisNeuralRecsys",
+        "Shinn_ReflexionVerbalReinforcement",
+        "Huang_LlmsCannotSelfCorrect",
+        "Dacrema_TroublingReproducibilityRecsys",
+        "Lin_CriticallyExaminingNeuralHype",
+        "Du_MultiagentDebateFactuality"
+      ],
+      "source_pdf_count": 8,
+      "prompt_count": 5,
+      "prompt_breadths": [
+        1,
+        2,
+        1,
+        2,
+        1
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "agentic_llm_systems",
+        "recsys_ir_reproducibility"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 8.0,
+        "prompt_count": 5.0,
+        "mean_papers_per_prompt": 1.4,
+        "wide_prompt_count": 0.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "contrast",
+        "demanded_synthesis_rank": 3,
+        "demanded_retrieval_rounds": 6,
+        "evidence_dispersion": "localised",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 3,
+        "shares_documents_with": null,
+        "split": "heldout",
+        "source_areas": [
+          "agentic_llm_systems",
+          "recsys_ir_reproducibility"
+        ]
+      }
+    },
+    {
+      "slot_id": "single_10",
+      "split": "heldout",
+      "pair_id": null,
+      "documents": [
+        "Du_MultiagentDebateFactuality",
+        "Smit_ShouldWeBeGoingMad",
+        "Rendle_NcfVsMatrixFactorization",
+        "Dacrema_WorryingAnalysisNeuralRecsys"
+      ],
+      "source_pdf_count": 4,
+      "prompt_count": 10,
+      "prompt_breadths": [
+        3,
+        4,
+        1,
+        2,
+        1,
+        2,
+        1,
+        2,
+        1,
+        2
+      ],
+      "target_prompt_chars": 1800,
+      "areas": [
+        "agentic_llm_systems",
+        "recsys_ir_reproducibility"
+      ],
+      "countable_features": {
+        "total_prompt_chars": 1800.0,
+        "source_pdf_count": 4.0,
+        "prompt_count": 10.0,
+        "mean_papers_per_prompt": 1.9,
+        "wide_prompt_count": 2.0
+      },
+      "metadata": {
+        "demanded_synthesis_depth": "reconcile",
+        "demanded_synthesis_rank": 4,
+        "demanded_retrieval_rounds": 10,
+        "evidence_dispersion": "scattered",
+        "requires_reconciliation": true,
+        "n_conflict_pairs": 1,
+        "shares_documents_with": null,
+        "split": "heldout",
+        "source_areas": [
+          "agentic_llm_systems",
+          "recsys_ir_reproducibility"
+        ]
+      }
+    }
+  ]
+}

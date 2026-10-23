@@ -16,7 +16,7 @@ one client, as in the experiments).
 
 No LLM or external RPC calls. Requires `forge build` in contracts/ first.
 
-    .venv/bin/python -m experiments.scripts.measure_gas [--port 8611] [--json out.json]
+    python -m experiments.measure_gas [--port 8611] [--json out.json]
 """
 from __future__ import annotations
 

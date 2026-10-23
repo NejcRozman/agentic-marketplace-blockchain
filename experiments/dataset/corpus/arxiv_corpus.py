@@ -1,11 +1,11 @@
-"""Fetch an arXiv paper corpus into the ``utils/files/`` layout the pipeline reads.
+"""Fetch the arXiv paper corpus into ``data/corpus/``, the layout the dataset collection reads.
 
 Two subcommands:
 
 ``search``
     Candidate discovery. Runs arXiv queries and dumps id/title/date/categories
-    so a corpus can be *curated* rather than sampled. S3 §0 asks for topical
-    clusters and deliberate conflicting pairs; a search query returns neither
+    so a corpus can be *curated* rather than sampled: topical clusters and
+    deliberately conflicting pairs are not something a search query returns
     reliably, so the workflow is search → inspect → pin ids into a spec file.
 
 ``build``
@@ -36,11 +36,24 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import yaml
 
+from agents.common import paths
+
 logger = logging.getLogger(__name__)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_SPEC = Path(__file__).resolve().parent / "corpus_v2.yaml"
-DEFAULT_OUT_DIR = REPO_ROOT / "utils" / "files" / "v2"
+REPO_ROOT = paths.REPO_ROOT
+
+
+def _display(path: Path) -> str:
+    """``data/...`` for data files, repo-relative for files in the tree, absolute otherwise."""
+    for root, prefix in ((paths.DATA_DIR, "data/"), (REPO_ROOT, "")):
+        try:
+            return prefix + str(Path(path).resolve().relative_to(root))
+        except ValueError:
+            continue
+    return str(path)
+
+DEFAULT_SPEC = Path(__file__).resolve().parent / "corpus.yaml"
+DEFAULT_OUT_DIR = paths.DATA_DIR / "corpus"
 
 ARXIV_API = "https://export.arxiv.org/api/query"
 USER_AGENT = "agentic-marketplace-corpus/1.0 (research; nejc.rozman@fs.uni-lj.si)"
@@ -434,8 +447,8 @@ def build_corpus(
     manifest = {
         "corpus_id": "v2",
         "source": "arXiv",
-        "spec": str(spec_path.relative_to(REPO_ROOT)),
-        "out_dir": str(out_dir.relative_to(REPO_ROOT)),
+        "spec": _display(spec_path),
+        "out_dir": _display(out_dir),
         "n_papers": len(records),
         "n_rejected": len(rejected),
         "rejected_ids": rejected,
@@ -506,10 +519,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     search.add_argument("--out", help="write candidate metadata to this JSON file")
     search.set_defaults(func=_cmd_search)
 
-    build = sub.add_parser("build", help="download the pinned corpus into utils/files/v2")
+    build = sub.add_parser("build", help="download the pinned corpus into data/corpus")
     build.add_argument("--spec", default=str(DEFAULT_SPEC))
     build.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
-    build.add_argument("--manifest", default=str(Path(__file__).resolve().parent / "manifest_v2.json"))
+    build.add_argument("--manifest", default=str(Path(__file__).resolve().parent / "manifest.json"))
     build.add_argument("--force", action="store_true", help="re-download PDFs that already exist")
     build.set_defaults(func=_cmd_build)
 

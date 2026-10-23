@@ -1,14 +1,9 @@
-"""Promote the v3 collection into `final/`, the layout the sampler reads.
+"""Select one collection into data/dataset/final/, the layout the market reads.
 
-`finalize_dataset_v2` cannot do this: it hardcodes v2's seven contributing
-collection names and rebuilds the canonical requirement set from the S3 plan.
-v3 is simpler by construction — one collection, all thirty requirements, one
-tier — so selecting it is the whole job.
+The sampler reads only `requirements.jsonl` and `runs.jsonl`; the manifest is
+written for provenance.
 
-The sampler reads only `requirements.jsonl` and `runs.jsonl` from the dataset
-directory; the manifest is written for provenance, not for consumption.
-
-    python -m experiments.executor_analysis.runners.finalize_dataset_v3
+    python -m experiments.dataset.finalize_dataset --collection full
 """
 
 from __future__ import annotations
@@ -20,7 +15,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
-DATASET_DIR = Path("experiments/executor_analysis/data/datasets/executor_tier_dataset_v3")
+from agents.common import paths
+
+DATASET_DIR = paths.DATASET_DIR
+#: The collection the experiments' dataset was finalized from.
 COLLECTION = "v3_full_001"
 
 
@@ -57,8 +55,8 @@ def finalize(dataset_dir: Path, collection: str) -> Dict[str, Any]:
     _write_jsonl(final_dir / "runs.jsonl", runs)
 
     manifest = {
-        "dataset_id": dataset_dir.name,
-        "built_by": "finalize_dataset_v3",
+        "dataset_id": reqs[0]["dataset_id"] if reqs else None,
+        "built_by": "finalize_dataset",
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "collection": collection,
         "requirements": len(reqs),
@@ -103,7 +101,7 @@ def main() -> int:
     if manifest["tiers"] != ["medium"]:
         print(f"⚠️  expected medium tier only, got {manifest['tiers']}")
         ok = False
-    print("\n✓ v3 finalized and complete" if ok else "\n✗ v3 finalized WITH WARNINGS")
+    print("\n✓ finalized and complete" if ok else "\n✗ finalized WITH WARNINGS")
     return 0 if ok else 1
 
 

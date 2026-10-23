@@ -1,0 +1,34 @@
+# Configuration of the dataset collection (collect_dataset.py), as used for the
+# experiments' dataset: the 30 slots of requirement_plan.json, executed three
+# times at the medium tier. See collect_dataset.py for the two invocations.
+#
+# Models are read from agents/config.py and recorded in every collection
+# manifest: SERVICE_GENERATION_MODEL (request generation), EVALUATOR_MODEL (the
+# judge) and SERVICE_LLM_MODEL (execution; default: the architecture's model).
+
+collection:
+  dataset_id: "executor_tier_dataset_v3"
+  collection_id: "full"
+  source_pdf_dir: "data/corpus"
+  file_glob: "*.pdf"
+  plan_path: "experiments/dataset/requirement_plan.json"
+  plan_slot_ids: []
+  plan_splits: []
+  prompt_char_tolerance: 0.15
+  prompt_generation_max_attempts: 5
+  effort_budget:
+    retrieval_rounds: {low: 1, medium: 3, high: 8}
+    tool_calls: {low: 1, medium: 3, high: 8}
+    retrieval_k: {low: 2, medium: 4, high: 8}
+  workspace_dir: "data/workspaces/collection"
+  provider_agent_id: "dataset-provider"
+  architecture: "1"
+  effort_tiers:
+    - "medium"
+  executor_repeats_per_requirement: 3
+  force_rebuild_rag: true
+  reset_executor_between_runs: false
+  include_partial_fallback_runs: true
+  heartbeat_interval_seconds: 30
+  evaluation_timeout_seconds: 180
+  overwrite: false

@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""
-Collect an appendable executor-analysis dataset across effort tiers.
+"""Build the recorded service dataset that the market runs replay. Makes paid LLM calls.
 
-Pipeline:
-1. Generate requirements from PDF abstracts via the consumer-side ServiceGenerator.
-2. Execute ServiceExecutor for each requirement x tier x repeat.
-3. Track per-run execution cost with CostTracker.
-4. Evaluate each service output with ServiceEvaluator.
-5. Persist append-only requirement and run records plus per-run artifacts.
-6. Refresh dataset-level summaries so later collections can append more data.
+Each request is written to a slot of the requirement plan (experiments/dataset/
+requirement_plan.json), which fixes its papers, its designed synthesis depth and
+its countable structure. The dataset was built in two collections:
+
+1. generate the request text for every slot, and stop:
+
+       python -m experiments.dataset.collect_dataset --collection-id requests --requirements-only
+
+2. execute each request three times at the medium tier and have the consumer's
+   judge rate each answer, reusing the text from step 1:
+
+       python -m experiments.dataset.collect_dataset --collection-id full --reuse-requirements-from requests
+
+Records are appended to data/dataset/{requirements,runs}.jsonl, with per-run
+artifacts under data/dataset/artifacts/; finalize_dataset.py then selects one
+collection into data/dataset/final/, the layout the market reads. The source
+papers are fetched with corpus/arxiv_corpus.py into data/corpus/.
 """
 
 from __future__ import annotations
@@ -17,12 +26,9 @@ import argparse
 import asyncio
 import contextlib
 import csv
-import itertools
 import json
 import logging
-import math
 import os
-import random
 import re
 import shutil
 import statistics
@@ -45,6 +51,7 @@ from agents.consumer.evaluator import ServiceEvaluator
 from agents.consumer.service_generator import DEPTH_LADDER, ServiceGenerator
 from agents.common.cost_tracker import CostTracker
 from agents.provider.service_executor import ServiceExecutor
+from agents.common import paths
 from agents.provider.estimation.requirement import VisibleRequirement, mechanical_features
 
 logger = logging.getLogger("executor_tier_dataset")
@@ -94,53 +101,37 @@ class ExecutorTierDatasetConfig:
     collection_id: str
     source_pdf_dir: str
     file_glob: str
-    output_dataset_dir: str
-    output_artifacts_dir: str
     workspace_dir: str
     provider_agent_id: str
     architecture: str
     effort_tiers: List[Optional[str]]
-    pdfs_per_service: int
-    service_generation_mode: str
-    service_generation_seed: Optional[int]
-    requirement_count: int
     executor_repeats_per_requirement: int
-    regenerate_requirement_each_repeat: bool
-    allow_pdf_reuse: bool
-    shuffle: bool
-    random_seed: int
     force_rebuild_rag: bool
     reset_executor_between_runs: bool
     include_partial_fallback_runs: bool
     evaluation_timeout_seconds: Optional[float]
     heartbeat_interval_seconds: float
     overwrite: bool
-    # Plan-driven requirement source (S4 §1a). Defaults keep the v1 sampling
-    # modes working unchanged.
-    requirement_source: str = "sampling"
-    plan_path: Optional[str] = None
+    plan_path: str
     plan_slot_ids: List[str] = field(default_factory=list)
     plan_splits: List[str] = field(default_factory=list)
     prompt_char_tolerance: float = 0.15
     prompt_generation_max_attempts: int = 3
     reuse_requirements_from: Optional[str] = None
-    # Realized effort budget (S4 §3's arm 007). Carried in the collection config so a
+    # The effort budget each tier buys. Carried in the collection config so a
     # run reproduces without environment variables — the executor reads the module
     # singleton, so forgetting them silently reverts to the design's caps.
     effort_budget: Optional[Dict[str, Dict[str, int]]] = None
-    #: S4 §4 Stage A: generate and persist requirements, then stop. Execution is the
+    #: Generate and persist requirements, then stop. Execution is the
     #: whole cost and runtime; separating it buys the chance to read the requirements
     #: before paying to execute them.
     requirements_only: bool = False
 
 
-#: Requirement metadata the plan carries through to `requirements.jsonl` (S4 §1c).
-#: Without these S5 cannot test whether the estimator recovered the driver, and
-#: the matched-pair contrast is unrecoverable after the fact.
-#: The caps `design_v2` grades its depth ladder to. Runtime values are
-#: environment-overridable (S4 §2.2 tunes them in the pilot); when they differ,
-#: the collection says so rather than silently producing a dataset the design's
-#: n80 no longer describes.
+#: Requirement metadata the plan carries through to `requirements.jsonl`, so the
+#: designed depth of every request stays attached to its records.
+#: The retrieval caps the plan's depth ladder is graded to. Runtime values are
+#: environment-overridable; when they differ, the collection says so.
 DESIGN_RETRIEVAL_CAPS = {"low": 1, "medium": 3, "high": 10}
 
 
@@ -163,28 +154,12 @@ class ExecutorTierDatasetCollector:
 
         self._apply_effort_budget()
 
-        self.requirement_source = str(cfg.requirement_source or "sampling").strip().lower()
-        if self.requirement_source not in {"sampling", "plan_driven"}:
-            raise ValueError(
-                f"Unknown requirement_source '{cfg.requirement_source}'; expected sampling or plan_driven"
-            )
-
-        if self.requirement_source == "plan_driven":
-            if not cfg.plan_path:
-                raise ValueError("plan_path is required when requirement_source=plan_driven")
-            if cfg.regenerate_requirement_each_repeat:
-                raise ValueError(
-                    "regenerate_requirement_each_repeat must be false for plan_driven collection: "
-                    "repeats must share a requirement (S4 §4)"
-                )
-
+        self.requirement_source = "plan_driven"
         self.source_pdf_dir = self._abs_path(cfg.source_pdf_dir)
-        self.dataset_root = self._abs_path(cfg.output_dataset_dir) / cfg.dataset_id
+        self.dataset_root = paths.DATASET_DIR
         self.collection_manifest_dir = self.dataset_root / "collections"
         self.collection_manifest_path = self.collection_manifest_dir / f"{cfg.collection_id}.json"
-        self.collection_artifacts_root = (
-            self._abs_path(cfg.output_artifacts_dir) / cfg.dataset_id / cfg.collection_id
-        )
+        self.collection_artifacts_root = paths.DATASET_ARTIFACTS_DIR / cfg.collection_id
 
         self.requirements_jsonl_path = self.dataset_root / "requirements.jsonl"
         self.runs_jsonl_path = self.dataset_root / "runs.jsonl"
@@ -199,18 +174,17 @@ class ExecutorTierDatasetCollector:
 
     @staticmethod
     def _abs_path(path_str: str) -> Path:
-        path = Path(path_str)
-        if path.is_absolute():
-            return path
-        return REPO_ROOT / path
+        return paths.resolve(path_str)
 
     @staticmethod
     def _repo_relative(path: Path) -> str:
-        """Repo-relative path when the file lives in the tree, absolute otherwise."""
-        try:
-            return str(path.relative_to(REPO_ROOT))
-        except ValueError:
-            return str(path)
+        """``data/...`` for data files, repo-relative for files in the tree, absolute otherwise."""
+        for root, prefix in ((paths.DATA_DIR, "data/"), (REPO_ROOT, "")):
+            try:
+                return prefix + str(path.relative_to(root))
+            except ValueError:
+                continue
+        return str(path)
 
     @staticmethod
     def _safe_id_fragment(text: str) -> str:
@@ -248,15 +222,12 @@ class ExecutorTierDatasetCollector:
         return "medium"
 
     @staticmethod
-    def _quality_criteria_for_depth(depth: Optional[str], multi_paper: bool) -> Dict[str, str]:
+    def _quality_criteria_for_depth(depth: str, multi_paper: bool) -> Dict[str, str]:
         """The criteria a consumer asking *this* task would actually state.
 
-        v1 asked every requirement for synthesis. On a `locate` task that is a
-        criterion the answer is not meant to satisfy, and the pilot showed the judge
-        scoring it 30 at the low tier against 73 at medium — a tier-correlated
-        penalty on the depth where the design wants tiers to be indistinguishable.
-        Synthesis is asked for only where the task demands it; the criteria set is
-        recorded per requirement so S5 can control for it.
+        Synthesis is asked for only where the task demands it (contrast, reconcile),
+        and lookups are judged on precision rather than elaboration, so a correct
+        one-line answer is not penalised. The criteria are recorded per requirement.
         """
         evidence_noun = "papers" if multi_paper else "paper"
         criteria = {
@@ -274,14 +245,6 @@ class ExecutorTierDatasetCollector:
                 "Precision: the exact detail requested is stated correctly, in the source's own "
                 "terms, with no padding or unrequested elaboration"
             )
-        if depth is None:
-            # Sampling modes keep v1's behaviour unchanged.
-            if multi_paper:
-                criteria["synthesis"] = (
-                    "Identify agreements, disagreements, and cross-paper insights when applicable"
-                )
-            return criteria
-
         if depth in {"contrast", "reconcile"}:
             criteria["synthesis"] = (
                 "Explain how the sources differ and why, using evidence from each"
@@ -294,7 +257,7 @@ class ExecutorTierDatasetCollector:
     def _build_requirements(
         pdf_paths: List[Path],
         prompts: List[str],
-        depth: Optional[str] = None,
+        depth: str,
     ) -> Dict[str, Any]:
         multi_paper = len(pdf_paths) > 1
         if not multi_paper:
@@ -416,135 +379,10 @@ class ExecutorTierDatasetCollector:
                 ", ".join(skipped_missing_abstract),
             )
 
-        if not with_abstract:
-            return []
-
-        if self.cfg.shuffle:
-            rng = random.Random(self.cfg.random_seed)
-            rng.shuffle(with_abstract)
-
         return with_abstract
 
-    def _build_requirement_pdf_groups(
-        self,
-        pdf_paths: List[Path],
-        target: Optional[int] = None,
-    ) -> List[List[Path]]:
-        if not pdf_paths:
-            return []
-
-        target = int(self.cfg.requirement_count if target is None else target)
-        if target < 1:
-            return []
-
-        sample_size = min(self.cfg.pdfs_per_service, len(pdf_paths))
-        if sample_size < self.cfg.pdfs_per_service:
-            logger.warning(
-                "Requested pdfs_per_service=%s but only %s PDFs are available; using %s PDFs per requirement",
-                self.cfg.pdfs_per_service,
-                len(pdf_paths),
-                sample_size,
-            )
-
-        generation_mode = str(self.cfg.service_generation_mode or "random_iterations").strip().lower()
-        if generation_mode not in {"random_iterations", "sequential_groups"}:
-            logger.warning(
-                "Unknown service_generation_mode '%s'; using random_iterations",
-                generation_mode,
-            )
-            generation_mode = "random_iterations"
-
-        if generation_mode == "random_iterations":
-            seed = self.cfg.service_generation_seed
-            if seed is None:
-                seed = self.cfg.random_seed
-            rng = random.Random(seed)
-            groups: List[List[Path]] = []
-            seen_group_keys: set[tuple[str, ...]] = set()
-
-            try:
-                max_unique_groups = math.comb(len(pdf_paths), sample_size)
-            except (AttributeError, OverflowError, ValueError):
-                max_unique_groups = None
-
-            unique_target = target if max_unique_groups is None else min(target, max_unique_groups)
-            max_attempts = max(100, unique_target * 50)
-            attempts = 0
-
-            while len(groups) < unique_target and attempts < max_attempts:
-                attempts += 1
-                candidate = rng.sample(pdf_paths, k=sample_size)
-                group_key = tuple(sorted(str(path) for path in candidate))
-                if group_key in seen_group_keys:
-                    continue
-                seen_group_keys.add(group_key)
-                groups.append(candidate)
-
-            if len(groups) < unique_target and max_unique_groups is not None and max_unique_groups <= 10000:
-                remaining_groups: List[List[Path]] = []
-                for combo in itertools.combinations(pdf_paths, sample_size):
-                    group_key = tuple(str(path) for path in combo)
-                    if group_key in seen_group_keys:
-                        continue
-                    remaining_groups.append(list(combo))
-                rng.shuffle(remaining_groups)
-                groups.extend(remaining_groups[: unique_target - len(groups)])
-
-            if len(groups) < unique_target:
-                logger.warning(
-                    "Requested %s random requirement groups but only generated %s unique groups",
-                    target,
-                    len(groups),
-                )
-
-            if len(groups) >= target:
-                return groups[:target]
-
-            if not self.cfg.allow_pdf_reuse:
-                return groups
-
-            logger.warning(
-                "Requested %s requirement groups but only %s unique random groups are available. "
-                "Reusing groups for the remainder.",
-                target,
-                len(groups),
-            )
-            while len(groups) < target:
-                groups.append(rng.sample(pdf_paths, k=sample_size))
-            return groups
-
-        base_groups = [
-            pdf_paths[i:i + sample_size]
-            for i in range(0, len(pdf_paths), sample_size)
-            if pdf_paths[i:i + sample_size]
-        ]
-        if target <= len(base_groups):
-            return base_groups[:target]
-
-        if not self.cfg.allow_pdf_reuse:
-            logger.warning(
-                "Requested %s requirements but only %s sequential groups are available. "
-                "Set allow_pdf_reuse=true to permit repeated group construction.",
-                target,
-                len(base_groups),
-            )
-            return base_groups
-
-        logger.info(
-            "Reusing PDFs to build %s multi-PDF requirements from %s unique PDFs",
-            target,
-            len(pdf_paths),
-        )
-        repeated_groups: List[List[Path]] = []
-        for group_idx in range(target):
-            start = (group_idx * sample_size) % len(pdf_paths)
-            repeated_groups.append(
-                [pdf_paths[(start + offset) % len(pdf_paths)] for offset in range(sample_size)]
-            )
-        return repeated_groups
-
     def _load_plan_slots(self) -> List[Dict[str, Any]]:
-        """Read the S3 requirement plan and select the slots this collection covers."""
+        """Read the requirement plan and select the slots this collection covers."""
         plan_path = self._abs_path(str(self.cfg.plan_path))
         if not plan_path.exists():
             raise FileNotFoundError(f"Requirement plan not found: {plan_path}")
@@ -618,7 +456,7 @@ class ExecutorTierDatasetCollector:
             )
 
     def _resolve_plan_documents(self, slot: Dict[str, Any], pdf_paths: List[Path]) -> List[Path]:
-        """Map a slot's document stems onto the corpus - no sampling (S4 §1a)."""
+        """Map a slot's document stems onto the corpus."""
         by_stem = {path.stem: path for path in pdf_paths}
         resolved: List[Path] = []
         missing: List[str] = []
@@ -650,37 +488,6 @@ class ExecutorTierDatasetCollector:
             )
         return specs
 
-    def _build_requirement_iteration_specs(self, pdf_paths: List[Path]) -> List[Dict[str, Any]]:
-        if not pdf_paths:
-            return []
-
-        if self.requirement_source == "plan_driven":
-            return self._build_plan_requirement_specs(pdf_paths)
-
-        total_requirement_groups = self.cfg.requirement_count
-        if self.cfg.regenerate_requirement_each_repeat:
-            total_requirement_groups *= self.cfg.executor_repeats_per_requirement
-
-        pdf_groups = self._build_requirement_pdf_groups(pdf_paths, target=total_requirement_groups)
-        specs: List[Dict[str, Any]] = []
-        for generated_idx, pdf_group in enumerate(pdf_groups, start=1):
-            if self.cfg.regenerate_requirement_each_repeat:
-                logical_requirement_idx = ((generated_idx - 1) // self.cfg.executor_repeats_per_requirement) + 1
-                repeat_idx = ((generated_idx - 1) % self.cfg.executor_repeats_per_requirement) + 1
-            else:
-                logical_requirement_idx = generated_idx
-                repeat_idx = 1
-
-            specs.append(
-                {
-                    "logical_requirement_idx": logical_requirement_idx,
-                    "repeat_idx": repeat_idx,
-                    "pdf_group": pdf_group,
-                }
-            )
-
-        return specs
-
     def _build_plan_requirement_metadata(
         self,
         slot: Dict[str, Any],
@@ -688,12 +495,12 @@ class ExecutorTierDatasetCollector:
         prompt_generation: Dict[str, Any],
         prompts: List[str],
     ) -> Dict[str, Any]:
-        """The per-requirement fields S5 needs (S4 §1c).
+        """The per-requirement design and realised-structure fields.
 
         Designed values come from the plan; realized values are measured on the
         prompts that were actually written, and the countable features are
         computed with `estimation.dataset.mechanical_features` - the same code
-        the counting baselines use, so §5.3's re-fit sees identical numbers.
+        the estimators use.
         """
         source_stems = [str(document) for document in slot.get("documents") or []]
         visible = VisibleRequirement(
@@ -805,7 +612,7 @@ class ExecutorTierDatasetCollector:
         return {str(r["slot_id"]): r for r in rows}
 
     def _resolve_models(self) -> Dict[str, Optional[str]]:
-        """The three models this collection ran on (S4 §2.1).
+        """The three models this collection ran on.
 
         Recorded per collection because the models are the instrument: the judge's
         discrimination is what lets the tier interaction show up in ratings at all,
@@ -841,7 +648,7 @@ class ExecutorTierDatasetCollector:
             "tool_calls": "service_max_tool_calls_by_effort",
             "retrieval_k": "service_retrieval_k_by_effort",
         }
-        # S4 §3c: the tier may also name the model it runs, with its own prices so a
+        # The tier may also name the model it runs, with its own prices so a
         # cheaper subcontractor shows up as cheaper in the record.
         for attribute, key in (("service_llm_by_effort", "model"), ("service_llm_prices_by_effort", "prices")):
             values = budget.get(key)
@@ -875,7 +682,7 @@ class ExecutorTierDatasetCollector:
         )
 
     def _resolve_effort_caps(self) -> Dict[str, Dict[str, int]]:
-        """The search budgets this collection ran under (S4 §2.2).
+        """The search budgets this collection ran under.
 
         `{low: 1, medium: 3, high: 10}` is what the design's depth ladder is graded
         to, but the caps are environment-overridable, so a re-tuned pilot must carry
@@ -901,7 +708,7 @@ class ExecutorTierDatasetCollector:
         }
 
     def _resolve_tier_models(self) -> Dict[str, Optional[str]]:
-        """The executor model each tier runs, when the tier names one (S4 §3c)."""
+        """The executor model each tier runs, when the tier names one."""
         by_effort = getattr(self.runtime_config, "service_llm_by_effort", {}) or {}
         return {tier: by_effort.get(tier) for tier in ("low", "medium", "high")}
 
@@ -912,8 +719,8 @@ class ExecutorTierDatasetCollector:
             return False
 
         logger.warning(
-            "Effort retrieval caps %s differ from the design's %s: the depth ladder is graded to "
-            "those caps, so S3's n80 must be re-derived against these before S5 (S4 §2.2)",
+            "Effort retrieval caps %s differ from the design's %s, to which the plan's depth "
+            "ladder is graded",
             realized,
             DESIGN_RETRIEVAL_CAPS,
         )
@@ -1082,7 +889,7 @@ class ExecutorTierDatasetCollector:
         return [float(r.get(key, 0.0) or 0.0) for r in runs]
 
     def _summarize_depth_tiers(self, run_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Rating and cost per (demanded depth x tier) — the pilot's and §5.2's table.
+        """Rating and cost per (demanded depth x tier).
 
         The design's claim is conditional, not marginal: quality should be flat
         across tiers on `locate` and collapse at the low tier on `reconcile`. Pooled
@@ -1312,17 +1119,12 @@ class ExecutorTierDatasetCollector:
         if not pdf_paths:
             raise RuntimeError("No eligible PDF files found for executor tier dataset collection")
 
-        requirement_specs = self._build_requirement_iteration_specs(pdf_paths)
-        if not requirement_specs:
-            raise RuntimeError("No requirement PDF groups could be built for executor tier dataset collection")
+        requirement_specs = self._build_plan_requirement_specs(pdf_paths)
 
         resolved_tiers = [self._resolve_effort_tier(tier) for tier in self.cfg.effort_tiers]
-        runs_per_generated_requirement = (
-            1 if self.cfg.regenerate_requirement_each_repeat else self.cfg.executor_repeats_per_requirement
-        )
         total_planned_runs = (
             0 if self.cfg.requirements_only
-            else len(requirement_specs) * len(self.cfg.effort_tiers) * runs_per_generated_requirement
+            else len(requirement_specs) * len(self.cfg.effort_tiers) * self.cfg.executor_repeats_per_requirement
         )
 
         if dry_run:
@@ -1342,18 +1144,13 @@ class ExecutorTierDatasetCollector:
                 "effort_caps_match_design": (
                     self._resolve_effort_caps()["retrieval_rounds"] == DESIGN_RETRIEVAL_CAPS
                 ),
-                "plan_path": str(self._abs_path(self.cfg.plan_path)) if self.cfg.plan_path else None,
+                "plan_path": str(self._abs_path(self.cfg.plan_path)),
                 "plan_slot_ids": [str(slot.get("slot_id")) for slot in plan_slots],
                 "plan_depth_counts": depth_counts,
                 "plan_splits": sorted({str(slot.get("split")) for slot in plan_slots}),
                 "requirement_count": len(requirement_specs),
-                "requested_requirement_count": self.cfg.requirement_count,
-                "generated_requirement_count": len(requirement_specs),
                 "effort_tiers": resolved_tiers,
-                "pdfs_per_service": self.cfg.pdfs_per_service,
-                "service_generation_mode": self.cfg.service_generation_mode,
                 "executor_repeats_per_requirement": self.cfg.executor_repeats_per_requirement,
-                "regenerate_requirement_each_repeat": self.cfg.regenerate_requirement_each_repeat,
                 "planned_total_runs": total_planned_runs,
             }
 
@@ -1373,11 +1170,10 @@ class ExecutorTierDatasetCollector:
         self._warn_on_effort_cap_drift()
 
         logger.info(
-            "Running executor tier dataset collection: generated_requirements=%s, tiers=%s, repeats=%s, regenerate_each_repeat=%s",
+            "Running dataset collection: requirements=%s, tiers=%s, repeats=%s",
             len(requirement_specs),
             resolved_tiers,
             self.cfg.executor_repeats_per_requirement,
-            self.cfg.regenerate_requirement_each_repeat,
         )
 
         started = time.time()
@@ -1390,16 +1186,8 @@ class ExecutorTierDatasetCollector:
             pdf_group = spec["pdf_group"]
             logical_requirement_idx = int(spec["logical_requirement_idx"])
             repeat_idx = int(spec["repeat_idx"])
-            slot = spec.get("slot")
-            preview_fragment = self._safe_id_fragment("_".join(pdf.stem for pdf in pdf_group[:2]))
-            if slot is not None:
-                requirement_id = f"{collection_prefix}_{self._safe_id_fragment(str(slot['slot_id']))}"
-            elif self.cfg.regenerate_requirement_each_repeat:
-                requirement_id = (
-                    f"{collection_prefix}_{logical_requirement_idx:04d}_repeat_{repeat_idx:03d}_{preview_fragment}"
-                )
-            else:
-                requirement_id = f"{collection_prefix}_{generated_idx:04d}_{preview_fragment}"
+            slot = spec["slot"]
+            requirement_id = f"{collection_prefix}_{self._safe_id_fragment(str(slot['slot_id']))}"
             req_dir = self._prepare_requirement_dir(requirement_id, pdf_group)
 
             paper_abstracts = [
@@ -1410,7 +1198,7 @@ class ExecutorTierDatasetCollector:
                 for pdf_path in pdf_group
             ]
 
-            reused = reused_requirements.get(str(slot["slot_id"])) if slot is not None else None
+            reused = reused_requirements.get(str(slot["slot_id"]))
             if reused is not None:
                 # Same task text, different execution conditions: the only way a cap
                 # sweep measures caps rather than prompt variation.
@@ -1433,10 +1221,6 @@ class ExecutorTierDatasetCollector:
                     slot["slot_id"],
                     self.cfg.reuse_requirements_from,
                 )
-            elif slot is None:
-                prompts = await service_generator._generate_prompts_from_abstracts(paper_abstracts)
-                prompt_generation: Optional[Dict[str, Any]] = None
-                plan_metadata: Dict[str, Any] = {}
             else:
                 slot_metadata = dict(slot.get("metadata") or {})
                 prompt_generation = await service_generator.generate_prompts_for_plan_slot(
@@ -1469,9 +1253,7 @@ class ExecutorTierDatasetCollector:
                 requirements = dict(reused["requirements"])
             else:
                 requirements = self._build_requirements(
-                    pdf_group,
-                    prompts,
-                    depth=None if slot is None else str(slot_metadata["demanded_synthesis_depth"]),
+                    pdf_group, prompts, depth=str(slot_metadata["demanded_synthesis_depth"])
                 )
             self._write_json(req_dir / "requirements.json", requirements)
 
@@ -1532,7 +1314,7 @@ class ExecutorTierDatasetCollector:
             source_pdfs = req["source_pdfs"]
             source_pdf_count = req["source_pdf_count"]
             plan_metadata = req.get("plan_metadata") or {}
-            # Carried onto every run so S5's by-depth contrasts (§5.2) need no join.
+            # Carried onto every run so by-depth analyses need no join.
             run_plan_fields = {
                 key: plan_metadata.get(key)
                 for key in (
@@ -1553,21 +1335,10 @@ class ExecutorTierDatasetCollector:
 
             for effort_tier in self.cfg.effort_tiers:
                 resolved_tier = self._resolve_effort_tier(effort_tier)
-                if self.cfg.regenerate_requirement_each_repeat:
-                    repeat_indices = [int(req.get("repeat_idx", 1))]
-                else:
-                    repeat_indices = list(range(1, self.cfg.executor_repeats_per_requirement + 1))
-
-                for repeat_idx in repeat_indices:
-                    repeat_label = (
-                        f"iteration {repeat_idx}/{self.cfg.executor_repeats_per_requirement}"
-                        if self.cfg.regenerate_requirement_each_repeat
-                        else f"repeat {repeat_idx}/{self.cfg.executor_repeats_per_requirement}"
-                    )
+                for repeat_idx in range(1, self.cfg.executor_repeats_per_requirement + 1):
                     run_label = (
                         f"requirement {requirement_id} [{req_idx}/{len(requirements_data)}], "
-                        f"logical_requirement {logical_requirement_idx}/{self.cfg.requirement_count}, "
-                        f"tier {resolved_tier}, {repeat_label}"
+                        f"tier {resolved_tier}, repeat {repeat_idx}/{self.cfg.executor_repeats_per_requirement}"
                     )
                     logger.info("Starting %s", run_label)
 
@@ -1641,7 +1412,7 @@ class ExecutorTierDatasetCollector:
                         "evaluator_error": evaluator_payload.get("error"),
                         "evaluator_duration_seconds": float(evaluator_payload.get("duration_seconds", 0.0)),
                         # Consumer-side spend per run: the judge makes prompt_count+1
-                        # calls, so it is a real cost line (S4 §2.1, §3.6).
+                        # calls, so it is a real cost line.
                         "evaluator_model": evaluator_payload.get("evaluator_model", evaluator_model),
                         "evaluator_llm_calls": int(evaluator_payload.get("evaluator_llm_calls", 0) or 0),
                         "evaluator_input_tokens": int(evaluator_payload.get("evaluator_input_tokens", 0) or 0),
@@ -1769,12 +1540,10 @@ class ExecutorTierDatasetCollector:
             "created_at": collection_started_at,
             "source_pdf_dir": str(self.source_pdf_dir),
             "requirements_added": len(requirement_records),
-            "requested_requirement_count": self.cfg.requirement_count,
             "runs_added": len(current_collection_run_records),
             "planned_total_runs": total_planned_runs,
             "effort_tiers": resolved_tiers,
             "executor_repeats_per_requirement": self.cfg.executor_repeats_per_requirement,
-            "regenerate_requirement_each_repeat": self.cfg.regenerate_requirement_each_repeat,
             "requirements_only": self.cfg.requirements_only,
             "successful_executor_runs": sum(1 for r in current_collection_run_records if r.get("executor_success")),
             "successful_evaluator_runs": sum(
@@ -1792,8 +1561,7 @@ class ExecutorTierDatasetCollector:
             "total_cost_stats": self._numeric_stats(
                 self._cost_series(current_collection_run_records, "total_cost_usd")
             ),
-            # What this collection actually spent, split by stage - the input to
-            # S4 3.6's extrapolation and to 2.1's affordability question.
+            # What this collection actually spent, split by stage.
             "spend_usd": {
                 "requirement_generation": service_generator.generation_usage()["cost_usd"],
                 "service_execution": round(sum(collection_costs), 8),
@@ -1827,15 +1595,8 @@ class ExecutorTierDatasetCollector:
                 "plan_splits": list(self.cfg.plan_splits or []),
                 "prompt_char_tolerance": self.cfg.prompt_char_tolerance,
                 "prompt_generation_max_attempts": self.cfg.prompt_generation_max_attempts,
-                "requirement_count": self.cfg.requirement_count,
-                "pdfs_per_service": self.cfg.pdfs_per_service,
-                "service_generation_mode": self.cfg.service_generation_mode,
-                "service_generation_seed": self.cfg.service_generation_seed,
                 "executor_repeats_per_requirement": self.cfg.executor_repeats_per_requirement,
-                "regenerate_requirement_each_repeat": self.cfg.regenerate_requirement_each_repeat,
-                "allow_pdf_reuse": self.cfg.allow_pdf_reuse,
-                "shuffle": self.cfg.shuffle,
-                "random_seed": self.cfg.random_seed,
+                "reuse_requirements_from": self.cfg.reuse_requirements_from,
                 "force_rebuild_rag": self.cfg.force_rebuild_rag,
                 "reset_executor_between_runs": self.cfg.reset_executor_between_runs,
                 "include_partial_fallback_runs": self.cfg.include_partial_fallback_runs,
@@ -1896,31 +1657,13 @@ def _expand_env_vars(raw_text: str) -> str:
 
 def load_config(path: Path) -> ExecutorTierDatasetConfig:
     raw = path.read_text(encoding="utf-8")
-    expanded = _expand_env_vars(raw)
-    data = yaml.safe_load(expanded) or {}
-
-    section = data.get("executor_tier_dataset_collection", {})
+    section = (yaml.safe_load(_expand_env_vars(raw)) or {}).get("collection", {})
     if not section:
-        raise ValueError("Missing 'executor_tier_dataset_collection' section in config")
-
-    requirement_count = int(
-        section.get(
-            "requirement_count",
-            section.get("service_generation_iterations", 10),
-        )
-    )
-    if requirement_count < 1:
-        raise ValueError("requirement_count must be >= 1")
-
-    pdfs_per_service = int(section.get("pdfs_per_service", 1))
-    if pdfs_per_service < 1:
-        raise ValueError("pdfs_per_service must be >= 1")
+        raise ValueError("Missing 'collection' section in config")
 
     repeats = int(section.get("executor_repeats_per_requirement", 1))
     if repeats < 1:
         raise ValueError("executor_repeats_per_requirement must be >= 1")
-
-    regenerate_requirement_each_repeat = bool(section.get("regenerate_requirement_each_repeat", True))
 
     heartbeat_interval_seconds = float(section.get("heartbeat_interval_seconds", 30))
     if heartbeat_interval_seconds <= 0:
@@ -1939,26 +1682,11 @@ def load_config(path: Path) -> ExecutorTierDatasetConfig:
         raw_tiers = [section.get("effort_tier")]
     elif not isinstance(raw_tiers, list):
         raw_tiers = [raw_tiers]
-
-    effort_tiers = []
-    for raw_tier in raw_tiers:
-        if raw_tier is None:
-            effort_tiers.append(None)
-        else:
-            effort_tiers.append(str(raw_tier).strip().lower())
-
-    if not effort_tiers:
-        effort_tiers = [None]
-
-    requirement_source = str(section.get("requirement_source", "sampling")).strip().lower()
-    if requirement_source not in {"sampling", "plan_driven"}:
-        raise ValueError(
-            f"Unknown requirement_source '{requirement_source}'; expected sampling or plan_driven"
-        )
+    effort_tiers = [None if t is None else str(t).strip().lower() for t in raw_tiers] or [None]
 
     plan_path = section.get("plan_path")
-    if requirement_source == "plan_driven" and not plan_path:
-        raise ValueError("plan_path is required when requirement_source=plan_driven")
+    if not plan_path:
+        raise ValueError("plan_path is required")
 
     def _as_str_list(value: Any) -> List[str]:
         if value is None:
@@ -1976,37 +1704,22 @@ def load_config(path: Path) -> ExecutorTierDatasetConfig:
         raise ValueError("prompt_generation_max_attempts must be >= 1")
 
     return ExecutorTierDatasetConfig(
-        dataset_id=str(section.get("dataset_id", "executor_tier_dataset_v1")),
+        dataset_id=str(section.get("dataset_id", "executor_tier_dataset_v3")),
         collection_id=str(section.get("collection_id", "collection_001")),
-        source_pdf_dir=section.get("source_pdf_dir", "utils/files/v1"),
+        source_pdf_dir=section.get("source_pdf_dir", "data/corpus"),
         file_glob=section.get("file_glob", "*.pdf"),
-        output_dataset_dir=section.get("output_dataset_dir", "experiments/executor_analysis/data/datasets"),
-        output_artifacts_dir=section.get("output_artifacts_dir", "experiments/executor_analysis/data/artifacts"),
-        workspace_dir=section.get("workspace_dir", "workspaces/executor_analysis"),
-        provider_agent_id=str(section.get("provider_agent_id", "executor-tier-dataset-provider")),
+        workspace_dir=section.get("workspace_dir", "data/workspaces/collection"),
+        provider_agent_id=str(section.get("provider_agent_id", "dataset-provider")),
         architecture=str(section.get("architecture", "1")),
         effort_tiers=effort_tiers,
-        pdfs_per_service=pdfs_per_service,
-        service_generation_mode=str(section.get("service_generation_mode", "random_iterations")),
-        service_generation_seed=(
-            None
-            if section.get("service_generation_seed") is None
-            else int(section.get("service_generation_seed"))
-        ),
-        requirement_count=requirement_count,
         executor_repeats_per_requirement=repeats,
-        regenerate_requirement_each_repeat=regenerate_requirement_each_repeat,
-        allow_pdf_reuse=bool(section.get("allow_pdf_reuse", True)),
-        shuffle=bool(section.get("shuffle", False)),
-        random_seed=int(section.get("random_seed", 42)),
         force_rebuild_rag=bool(section.get("force_rebuild_rag", True)),
         reset_executor_between_runs=bool(section.get("reset_executor_between_runs", False)),
         include_partial_fallback_runs=bool(section.get("include_partial_fallback_runs", True)),
         evaluation_timeout_seconds=evaluation_timeout_seconds,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         overwrite=bool(section.get("overwrite", False)),
-        requirement_source=requirement_source,
-        plan_path=None if plan_path is None else str(plan_path),
+        plan_path=str(plan_path),
         plan_slot_ids=_as_str_list(section.get("plan_slot_ids")),
         plan_splits=[s.lower() for s in _as_str_list(section.get("plan_splits"))],
         prompt_char_tolerance=prompt_char_tolerance,
@@ -2022,20 +1735,12 @@ def load_config(path: Path) -> ExecutorTierDatasetConfig:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Collect appendable executor-analysis dataset across effort tiers"
-    )
+    parser = argparse.ArgumentParser(description="Build the recorded service dataset (makes paid LLM calls)")
     parser.add_argument(
         "--config",
         type=Path,
-        default=REPO_ROOT / "experiments/executor_analysis/configs/executor_tier_dataset_collection.yaml",
-        help="Path to executor tier dataset collection YAML config",
-    )
-    parser.add_argument(
-        "--requirements",
-        type=int,
-        default=None,
-        help="Optional runtime override for requirement_count",
+        default=REPO_ROOT / "experiments/dataset/collection.yaml",
+        help="Path to the collection YAML config",
     )
     parser.add_argument(
         "--repeats",
@@ -2059,8 +1764,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Comma-separated plan slot_ids to collect (plan_driven only); "
-            "use for the S4 §3 pilot before spending the rest"
+            "Comma-separated plan slot_ids to collect, e.g. for a pilot before spending the rest"
         ),
     )
     parser.add_argument(
@@ -2069,28 +1773,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Override workspace_dir. Each parallel worker needs its own: concurrent "
-            "RAG index rebuilds in one directory corrupt each other (S4 §4)"
+            "RAG index rebuilds in one directory corrupt each other"
         ),
     )
     parser.add_argument(
         "--requirements-only",
         action="store_true",
-        help="Generate and persist requirements, then stop (S4 §4 Stage A)",
+        help="Generate and persist requirements, then stop",
     )
     parser.add_argument(
         "--reuse-requirements-from",
         type=str,
         default=None,
         help=(
-            "Reuse another collection's requirement text instead of generating new prompts, "
-            "so a cap sweep varies only the caps"
+            "Reuse another collection's requirement text instead of generating new prompts"
         ),
     )
     parser.add_argument(
         "--splits",
         type=str,
         default=None,
-        help="Comma-separated plan splits to collect, e.g. dev (plan_driven only)",
+        help="Comma-separated plan splits to collect, e.g. dev",
     )
     parser.add_argument(
         "--evaluation-timeout-seconds",
@@ -2127,10 +1830,6 @@ async def _async_main() -> int:
     )
 
     cfg = load_config(args.config)
-    if args.requirements is not None:
-        if args.requirements < 1:
-            raise ValueError("--requirements must be >= 1")
-        cfg.requirement_count = int(args.requirements)
     if args.repeats is not None:
         if args.repeats < 1:
             raise ValueError("--repeats must be >= 1")
@@ -2172,7 +1871,7 @@ def main() -> int:
         logger.warning("Interrupted by user")
         return 130
     except Exception as exc:
-        logger.error("Executor tier dataset collection failed: %s", exc, exc_info=True)
+        logger.error("Dataset collection failed: %s", exc, exc_info=True)
         return 1
 
 
