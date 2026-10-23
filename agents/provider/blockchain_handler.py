@@ -2618,7 +2618,8 @@ Analyze these auctions and decide which to bid on."""
                         )
                         continue
                     try:
-                        service_reqs = await ipfs_client.fetch_json(cid)
+                        # Short timeout: this runs inside the commit window.
+                        service_reqs = await ipfs_client.fetch_json(cid, timeout=5)
                         auction["service_requirements"] = service_reqs if service_reqs else {}
                         logger.debug(f"📥 Fetched service requirements for auction {auction['auction_id']}")
                     except Exception as e:

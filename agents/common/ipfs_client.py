@@ -8,8 +8,10 @@ Provides functionality for:
 - Creating service description bundles with attachments
 """
 
+import asyncio
 import logging
 import json
+import time
 import aiohttp
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
@@ -28,11 +30,11 @@ PINATA_API_URL = "https://api.pinata.cloud"
 PINATA_PIN_JSON_URL = f"{PINATA_API_URL}/pinning/pinJSONToIPFS"
 PINATA_PIN_FILE_URL = f"{PINATA_API_URL}/pinning/pinFileToIPFS"
 
-# Public IPFS gateways for reading (in order of preference)
+# Public IPFS gateways, tried after the configured one (IPFS_GATEWAY). Pinata's
+# public gateway no longer serves content for reading, so a dedicated gateway
+# (https://<name>.mypinata.cloud/ipfs/) is the reliable choice.
 IPFS_GATEWAYS = [
-    "https://gateway.pinata.cloud/ipfs/",
     "https://ipfs.io/ipfs/",
-    "https://cloudflare-ipfs.com/ipfs/",
     "https://dweb.link/ipfs/",
 ]
 
@@ -89,8 +91,8 @@ class IPFSClient:
     """
     IPFS client using Pinata for pinning content.
     
-    Supports uploading JSON metadata and files, and fetching content
-    from IPFS via public gateways.
+    Supports uploading JSON metadata and files, and fetching content from IPFS
+    through the configured gateway (IPFS_GATEWAY) or public gateways.
     """
     
     def __init__(
@@ -112,6 +114,12 @@ class IPFSClient:
         self.jwt = jwt or os.getenv("PINATA_JWT")
         self.api_key = api_key or os.getenv("PINATA_API_KEY")
         self.api_secret = api_secret or os.getenv("PINATA_API_SECRET")
+        # Gateway for reading, tried first; its access key, if it has access controls.
+        gateway = (os.getenv("IPFS_GATEWAY") or "").strip()
+        if gateway and not gateway.endswith("/"):
+            gateway += "/"
+        self.gateway = gateway or None
+        self.gateway_token = (os.getenv("PINATA_GATEWAY_TOKEN") or "").strip() or None
         
         if not self.jwt and not (self.api_key and self.api_secret):
             logger.warning("Pinata credentials not configured. Upload operations will fail.")
@@ -313,48 +321,58 @@ class IPFSClient:
         self,
         cid: str,
         as_json: bool = True,
-        timeout: int = 30
+        timeout: int = 30,
+        retry_for: float = 0.0,
     ) -> Optional[Union[Dict[str, Any], bytes]]:
         """
-        Fetch content from IPFS via public gateways.
-        
+        Fetch content from IPFS: the configured gateway first, then public ones.
+
         Args:
             cid: The IPFS content identifier
             as_json: If True, parse response as JSON; if False, return raw bytes
-            timeout: Request timeout in seconds
-            
+            timeout: Request timeout per gateway, in seconds
+            retry_for: Keep retrying all gateways for this many seconds. Freshly
+                pinned content can take a while to become readable.
+
         Returns:
             Parsed JSON dict, raw bytes, or None if fetch failed
         """
-        for gateway in IPFS_GATEWAYS:
-            url = f"{gateway}{cid}"
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        url,
-                        timeout=aiohttp.ClientTimeout(total=timeout)
-                    ) as response:
-                        if response.status == 200:
-                            if as_json:
-                                data = await response.json()
-                                logger.debug(f"Fetched JSON from IPFS: {cid}")
-                                return data
-                            else:
+        gateways = ([self.gateway] if self.gateway else []) + IPFS_GATEWAYS
+        deadline = time.monotonic() + max(0.0, retry_for)
+        while True:
+            outcomes = []
+            for gateway in gateways:
+                url = f"{gateway}{cid}"
+                headers = (
+                    {"x-pinata-gateway-token": self.gateway_token}
+                    if gateway == self.gateway and self.gateway_token else None
+                )
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            url,
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=timeout)
+                        ) as response:
+                            if response.status == 200:
+                                if as_json:
+                                    data = await response.json(content_type=None)
+                                    logger.debug(f"Fetched JSON from IPFS: {cid}")
+                                    return data
                                 data = await response.read()
                                 logger.debug(f"Fetched {len(data)} bytes from IPFS: {cid}")
                                 return data
-                        else:
-                            logger.debug(f"Gateway {gateway} returned {response.status}")
-                            continue
-                            
-            except Exception as e:
-                logger.debug(f"Gateway {gateway} failed: {e}")
-                continue
-        
-        logger.error(f"Failed to fetch {cid} from all gateways")
+                            outcomes.append(f"HTTP {response.status}")
+                except Exception as e:
+                    outcomes.append(type(e).__name__)
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(3)
+
+        logger.error(f"Failed to fetch {cid} from all gateways ({', '.join(outcomes)})")
         return None
-    
-    async def fetch_json(self, cid: str, timeout: int = 30) -> Optional[Dict[str, Any]]:
+
+    async def fetch_json(self, cid: str, timeout: int = 30, retry_for: float = 0.0) -> Optional[Dict[str, Any]]:
         """
         Fetch and parse JSON content from IPFS.
         
@@ -365,9 +383,9 @@ class IPFSClient:
         Returns:
             Parsed JSON dict or None if fetch failed
         """
-        return await self.fetch(cid, as_json=True, timeout=timeout)
+        return await self.fetch(cid, as_json=True, timeout=timeout, retry_for=retry_for)
     
-    async def fetch_file(self, cid: str, timeout: int = 60) -> Optional[bytes]:
+    async def fetch_file(self, cid: str, timeout: int = 60, retry_for: float = 0.0) -> Optional[bytes]:
         """
         Fetch raw file content from IPFS.
         
@@ -378,9 +396,11 @@ class IPFSClient:
         Returns:
             Raw bytes or None if fetch failed
         """
-        return await self.fetch(cid, as_json=False, timeout=timeout)
+        return await self.fetch(cid, as_json=False, timeout=timeout, retry_for=retry_for)
     
-    async def download_file(self, cid: str, output_path: Union[str, Path], timeout: int = 60) -> bool:
+    async def download_file(
+        self, cid: str, output_path: Union[str, Path], timeout: int = 60, retry_for: float = 0.0
+    ) -> bool:
         """
         Download a file from IPFS and save it to local filesystem.
         
@@ -393,7 +413,7 @@ class IPFSClient:
             True if successful, False otherwise
         """
         try:
-            data = await self.fetch_file(cid, timeout=timeout)
+            data = await self.fetch_file(cid, timeout=timeout, retry_for=retry_for)
             if data:
                 output_path = Path(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)

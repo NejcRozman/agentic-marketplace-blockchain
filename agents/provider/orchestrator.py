@@ -38,6 +38,9 @@ from agents.config import Config
 
 logger = logging.getLogger(__name__)
 
+#: How long a job keeps retrying IPFS reads before it fails.
+IPFS_RETRY_SECONDS = 180
+
 
 class SampledReplayUnavailable(RuntimeError):
     """Dataset v2 has no recorded run for this (requirement, tier).
@@ -373,7 +376,8 @@ class Orchestrator:
                 return
 
             # Fetch service description from IPFS
-            requirements = await self.ipfs_client.fetch_json(job.service_cid)
+            # Freshly pinned content can take a while to become readable.
+            requirements = await self.ipfs_client.fetch_json(job.service_cid, retry_for=IPFS_RETRY_SECONDS)
             
             if not requirements:
                 raise Exception(f"Failed to fetch service requirements from IPFS: {job.service_cid}")
@@ -424,7 +428,7 @@ class Orchestrator:
                     or "input.pdf"
                 )
                 output_path = job.pdf_directory / output_name
-                success = await self.ipfs_client.download_file(input_cid, output_path)
+                success = await self.ipfs_client.download_file(input_cid, output_path, retry_for=IPFS_RETRY_SECONDS)
                 if success:
                     downloaded_count += 1
                 else:
@@ -438,7 +442,7 @@ class Orchestrator:
                     for filename, cid in input_files.items():
                         logger.info(f"Downloading {filename} from IPFS: {cid}")
                         output_path = job.pdf_directory / filename
-                        success = await self.ipfs_client.download_file(cid, output_path)
+                        success = await self.ipfs_client.download_file(cid, output_path, retry_for=IPFS_RETRY_SECONDS)
                         if success:
                             downloaded_count += 1
                         else:
@@ -449,7 +453,7 @@ class Orchestrator:
                     for i, cid in enumerate(input_files):
                         logger.info(f"Downloading file {i+1} from IPFS: {cid}")
                         output_path = job.pdf_directory / f"input_{i+1}.pdf"
-                        success = await self.ipfs_client.download_file(cid, output_path)
+                        success = await self.ipfs_client.download_file(cid, output_path, retry_for=IPFS_RETRY_SECONDS)
                         if success:
                             downloaded_count += 1
                         else:

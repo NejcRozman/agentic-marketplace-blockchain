@@ -688,7 +688,7 @@ class Consumer:
             return
         
         # Get original service requirements from IPFS
-        service_requirements = await self.ipfs_client.fetch_json(tracker.service_cid)
+        service_requirements = await self.ipfs_client.fetch_json(tracker.service_cid, retry_for=180)
         
         # Evaluate using ReAct agent
         tracker.evaluation_started_at = datetime.now()
