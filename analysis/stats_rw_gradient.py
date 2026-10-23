@@ -37,7 +37,7 @@ CELLS = [
     (0.35, "Regression", "B_gptoss20b_rw35_xd_vs_rguarded",  "B_r_guarded"),
     (0.50, "Regression", "B_gptoss20b_rw50_xd_vs_rguarded",  "B_r_guarded"),
     (0.65, "Regression", "B_gptoss20b_rw65_xd_vs_rguarded",  "B_r_guarded"),
-    # the decline-rule condition at w = 0.8, configured exactly as the sweep
+    # The decline-rule condition at w = 0.8, configured exactly as the sweep.
     (0.80, "Regression", "C_o2c_on_rw80",                    "B_r_guarded"),
 ]
 
@@ -86,7 +86,7 @@ def main():
     boot = []
     for _ in range(args.boot):
         pick = rng.choice(seeds, size=len(seeds), replace=True)
-        # relabel resampled seeds so duplicates are separate groups
+        # Relabel resampled seeds so duplicates are separate groups.
         bdf = pd.concat([by_seed[s].assign(seed=i) for i, s in enumerate(pick)], ignore_index=True)
         boot.append(crossings(fit(bdf).params))
     boot = np.array(boot)

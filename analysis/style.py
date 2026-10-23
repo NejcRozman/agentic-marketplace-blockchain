@@ -72,8 +72,11 @@ def name(key: str) -> str:
 
 
 def apply(column: bool = False):
-    """Set the shared style. column=True: figure drawn at COL_WIDTH for one column
-    of the two-column layout, with type and marks scaled to match page-wide ones."""
+    """Set the shared style.
+
+    column=True draws the figure at COL_WIDTH, one column of the two-column layout,
+    with type and marks scaled to match page-wide figures.
+    """
     global MS, MEW, ERR_LW, CAP, CAP_LW, LINE_LW, LETTER_FS, HINT_FS, AXNOTE_FS
     if column:
         MS, MEW, ERR_LW, CAP, CAP_LW, LINE_LW = 3.0, 1.0, 1.1, 2.0, 1.1, 1.5

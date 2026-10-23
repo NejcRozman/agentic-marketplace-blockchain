@@ -39,8 +39,10 @@ def agent_status(row, group):
 
 
 def underestimated(cell, group):
-    """Share of Adaptive's bids, and of its won jobs, whose true cost exceeded its
-    execution-cost estimate (the running average in force when it bid)."""
+    """Share of Adaptive's bids, and of its won jobs, whose true cost exceeded its estimate.
+
+    The estimate is the running average of execution costs in force when it bid.
+    """
     truth = requirement_means()
     bids = bids_under = won = won_under = 0
     for row in ok_runs(cell):

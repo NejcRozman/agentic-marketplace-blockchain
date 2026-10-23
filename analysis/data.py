@@ -114,7 +114,6 @@ def paired_difference(cell: str, a: str, b: str) -> Interval:
 # group against the other group. The self-play check and the two unreported
 # regression variants are in no family; cells with fewer than 40 runs are left out.
 # ---------------------------------------------------------------------------
-
 NOT_IN_FAMILY = {"S91_selfplay_adaptive", "E_xd_vs_rd_v3", "E_xd_vs_rnaive_v3"}
 RUNS_PER_CELL = 40
 

@@ -90,7 +90,7 @@ def main():
         ax.text(0.5, -0.38, f"{letter})", transform=ax.transAxes,
                 ha="center", va="top", fontsize=style.LETTER_FS, color=style.INK)
 
-        # table view: vs Adaptive (plotted) and vs Regression (printed only)
+        # Table view: vs Adaptive (plotted) and vs Regression (printed only).
         rx = series(CELLS_R, XD, fn, scale)
         rr = None if letter == "a" else series(CELLS_R, "B_r_guarded", fn, scale)
         print(f"\n{letter}) {label}")

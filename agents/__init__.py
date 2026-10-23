@@ -1,13 +1,9 @@
-"""
-Agentic Marketplace - AI Agents Package
+"""The marketplace agents, built with LangGraph.
 
-This package contains AI agents for the agentic marketplace, built with LangGraph.
-
-Structure:
-- infrastructure/: Shared blockchain utilities (client, ABIs, feedbackAuth)
-- provider/: Complete service provider agent (literature review + blockchain + orchestration)
-- consumer/: Complete service consumer agent (future)
-- config.py: Shared configuration
+``common/``    blockchain client, contract ABIs, IPFS, feedback authorisation, dataset replay
+``consumer/``  the consumer agent: publishes jobs, runs their auctions, rates the results
+``provider/``  the provider agent: bidding strategies, cost estimators, service execution
+``config.py``  configuration shared by all agents
 """
 
 __version__ = "0.1.0"

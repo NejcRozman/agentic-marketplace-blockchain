@@ -81,14 +81,17 @@ W_ROWS = [0.0, 0.2, 0.35, 0.5, 0.65, 0.8]
 
 
 def fitted_gradient(ax):
-    """Overlay the mixed model (stats_rw_gradient) on panel a: fitted Δ against Adaptive
-    at each row, and the crossing point w* where it reaches zero."""
+    """Overlay the mixed model (stats_rw_gradient) on panel a.
+
+    Draws the fitted Δ against Adaptive at each row and the crossing point w* where it
+    reaches zero.
+    """
     res = grad.fit(grad.frame())
     b0, b1 = res.params["Intercept"], res.params["w"]
     ys = list(range(len(W_ROWS)))[::-1]
     ax.plot([b0 + b1 * w for w in W_ROWS], ys, ls="--", lw=1.0, color=style.INK_2, zorder=1)
     w_star = -b0 / b1
-    # row position of w* by linear interpolation between neighbouring rows
+    # Row position of w*, by linear interpolation between neighbouring rows.
     for (wa, ya), (wb, yb) in zip(zip(W_ROWS, ys), zip(W_ROWS[1:], ys[1:])):
         if wa <= w_star <= wb:
             y_star = ya + (yb - ya) * (w_star - wa) / (wb - wa)
