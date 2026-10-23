@@ -1,4 +1,4 @@
-"""Consumer agent for the decentralized AI services marketplace."""
+"""The consumer agent: it publishes jobs, runs their auctions and rates the delivered results."""
 
 from .consumer_orchestrator import Consumer, AuctionStatus, AuctionTracker
 from .service_generator import ServiceGenerator

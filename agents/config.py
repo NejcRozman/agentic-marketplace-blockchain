@@ -1,15 +1,17 @@
-"""Configuration management for agentic marketplace agents."""
+"""Agent configuration, read from environment variables (and ``agents/.env``).
+
+The experiment runner sets the variables per agent from the condition config;
+``agents/.env`` only supplies defaults, such as API keys.
+"""
 
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Get the path to the agents directory where .env file is located
 AGENTS_DIR = Path(__file__).parent
 ENV_FILE_PATH = AGENTS_DIR / ".env"
 
-# Load environment variables from .env file (use as defaults, don't override existing)
-# This allows experiment runner to override contract addresses for each run
+# Values already in the environment (set by the experiment runner) take precedence.
 load_dotenv(ENV_FILE_PATH, override=False)
 
 #: The consumer side's model, for request generation and evaluation: the same
@@ -18,34 +20,32 @@ CONSUMER_LLM_DEFAULT = "openai/gpt-5.4-mini"
 
 
 class Config:
-    """Simple configuration class for marketplace agents."""
+    """Settings of one agent process."""
     
     def __init__(self):
-        """Load configuration from environment variables."""
         
-        # LLM API (OpenRouter)
+        # OpenRouter
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         
-        # Pinata IPFS
+        # Pinata (IPFS)
         self.pinata_api_key = os.getenv("PINATA_API_KEY")
         self.pinata_api_secret = os.getenv("PINATA_API_SECRET")
         self.pinata_jwt = os.getenv("PINATA_JWT")
         
-        # Blockchain connection
+        # Chain
         self.rpc_url = os.getenv("BLOCKCHAIN_RPC_URL", "http://localhost:8545")
         self.chain_id = int(os.getenv("BLOCKCHAIN_CHAIN_ID", "31337"))
         self.private_key = os.getenv("BLOCKCHAIN_PRIVATE_KEY")
         self.gas_limit = int(os.getenv("BLOCKCHAIN_GAS_LIMIT", "3000000"))
         
-        # Contract addresses (set these after deployment)
+        # Contract addresses, set by the runner after deployment
         self.reverse_auction_address = os.getenv("BLOCKCHAIN_REVERSE_AUCTION_ADDRESS")
         self.identity_registry_address = os.getenv("BLOCKCHAIN_IDENTITY_REGISTRY_ADDRESS")
         self.reputation_registry_address = os.getenv("BLOCKCHAIN_REPUTATION_REGISTRY_ADDRESS")
-        self.payment_token_address = os.getenv("BLOCKCHAIN_PAYMENT_TOKEN_ADDRESS")  # USDC or mock USDC
+        self.payment_token_address = os.getenv("BLOCKCHAIN_PAYMENT_TOKEN_ADDRESS")  # mock USDC
         self.initial_reputation_default = int(os.getenv("BLOCKCHAIN_INITIAL_REPUTATION_DEFAULT", "50"))
         
-        # Provider Agent ID
         self.agent_id = int(os.getenv("BLOCKCHAIN_AGENT_ID", "4427"))
 
         # The decline rule.
@@ -81,53 +81,37 @@ class Config:
         run_seed_raw = os.getenv("RUN_SEED", "").strip()
         self.run_seed = int(run_seed_raw) if run_seed_raw else None
 
-        # Consumer Agent Configuration
-        self.consumer_agent_id = int(os.getenv("CONSUMER_AGENT_ID", "0"))  # Set to 0 if not a consumer
+        # Consumer
+        self.consumer_agent_id = int(os.getenv("CONSUMER_AGENT_ID", "0"))  # 0 if not a consumer
         eligible_str = os.getenv("ELIGIBLE_PROVIDERS", "")
         self.eligible_providers = [int(id.strip()) for id in eligible_str.split(",") if id.strip()]
         self.consumer_check_interval = float(os.getenv("CONSUMER_CHECK_INTERVAL", "5"))
         self.consumer_check_interval_jitter = float(os.getenv("CONSUMER_CHECK_INTERVAL_JITTER", "0.0"))
         
-        # Random provider selection configuration
+        # Optional random selection of the eligible providers
         pool_str = os.getenv("PROVIDER_POOL", "")
         self.provider_pool = [int(id.strip()) for id in pool_str.split(",") if id.strip()]
         eligible_per_auction_str = os.getenv("ELIGIBLE_PER_AUCTION", "")
         self.eligible_per_auction = int(eligible_per_auction_str) if eligible_per_auction_str else None
         
-        # Consumer Auto-Auction Configuration
+        # Automatic auction creation
         self.auto_create_auction = os.getenv("AUTO_CREATE_AUCTION", "false").lower() == "true"
         self.num_auctions = int(os.getenv("NUM_AUCTIONS", "1"))
-        self.auction_creation_delay = int(os.getenv("AUCTION_CREATION_DELAY", "0"))  # Delay before first auction
-        self.inter_auction_delay = int(os.getenv("INTER_AUCTION_DELAY", "30"))  # Delay between auctions
+        self.auction_creation_delay = int(os.getenv("AUCTION_CREATION_DELAY", "0"))  # seconds before the first auction
+        self.inter_auction_delay = int(os.getenv("INTER_AUCTION_DELAY", "30"))  # seconds between auctions
         self.pdf_directory = os.getenv("PDF_DIRECTORY", "")
 
-        # Where a provider writes a finished job and the consumer reads it back.
-        #
-        # **Must be per-run.** The path is keyed by auction id alone
-        # (`<jobs>/auction_<id>/result.json`), so two runs sharing it overwrite
-        # each other's results and each consumer evaluates whichever job was
-        # written last. That is not hypothetical: it gave one agent a rating of
-        # 42 belonging to a different run's execution of the same requirement,
-        # collapsing its reputation and costing it nineteen consecutive
-        # auctions. Ports and chain ids were correctly isolated; the leak was
-        # through the filesystem.
+        # Where a provider writes a finished job and the consumer reads it back. Must be
+        # per run: the path is keyed by auction id alone, so runs sharing it would
+        # evaluate each other's results.
         self.jobs_directory = os.getenv(
             "AGENT_JOBS_DIR",
             str(Path(__file__).resolve().parent / "data" / "jobs"),
         )
 
-        # Where a provider persists its sealed-bid commit-reveal nonces.
-        #
-        # **Must be per-run**, for a sharper reason than the jobs directory: the
-        # file is keyed by agent id alone, agent ids repeat across runs, and the
-        # runner *deletes* it at startup ("stale commitments from a previous
-        # run"). That is right serially and destructive in parallel — a run
-        # starting six seconds after another wipes the commitments of every run
-        # already in flight. Observed: an agent reads a concurrent run's file,
-        # treats auction 1 as already committed and never bids on it, and an
-        # agent whose file was wiped cannot reveal a bid it did place. Eight of
-        # twenty arm-runs lost auction 1 this way, and only under parallelism —
-        # which is why no test and no earlier sequential experiment caught it.
+        # Where a provider persists the nonces of its sealed bids. Must be per run: the
+        # file is keyed by agent id, agent ids repeat across runs, and the runner
+        # deletes it at startup, which would wipe the bids of parallel runs.
         self.commitments_directory = os.getenv(
             "AGENT_COMMITMENTS_DIR",
             str(Path(__file__).resolve().parent / "data" / "commitments"),
@@ -176,17 +160,16 @@ class Config:
             or os.getenv("OPENROUTER_MODEL", "").strip()
             or CONSUMER_LLM_DEFAULT
         )
-        self.max_budget = int(os.getenv("MAX_BUDGET", "10000000"))  # 10 USDC with 6 decimals
-        # Sealed-bid commit-reveal auction phases: providers commit a hash during
-        # commit_duration, then disclose (bid, nonce) during reveal_duration.
-        self.commit_duration = int(os.getenv("COMMIT_DURATION", "1800"))  # 30 minutes
-        self.reveal_duration = int(os.getenv("REVEAL_DURATION", "300"))  # 5 minutes
-        self.reputation_weight = int(os.getenv("REPUTATION_WEIGHT", "30"))  # 0-100, weight of reputation in bid scoring
+        self.max_budget = int(os.getenv("MAX_BUDGET", "10000000"))  # micro-USDC (10 USDC)
+        # Sealed-bid phases: providers commit a hash during commit_duration, then
+        # disclose (bid, nonce) during reveal_duration.
+        self.commit_duration = int(os.getenv("COMMIT_DURATION", "1800"))  # seconds
+        self.reveal_duration = int(os.getenv("REVEAL_DURATION", "300"))  # seconds
+        self.reputation_weight = int(os.getenv("REPUTATION_WEIGHT", "30"))  # 0-100: weight of reputation in the score
         
-        # Agent workspace
         self.workspace_dir = os.getenv("WORKSPACE_DIR", "./workspaces")
         
-        # RAG parameters (fixed configuration)
+        # RAG parameters
         self.rag_temperature = float(os.getenv("RAG_TEMPERATURE", "0.3"))
         self.rag_retrieval_k = int(os.getenv("RAG_RETRIEVAL_K", "3"))
         self.rag_chunk_size = int(os.getenv("RAG_CHUNK_SIZE", "1000"))
@@ -194,7 +177,7 @@ class Config:
         self.service_recursion_limit = int(os.getenv("SERVICE_RECURSION_LIMIT", "25"))
         self.react_recursion_limit = int(os.getenv("REACT_RECURSION_LIMIT", "20"))
         
-        # Provider bidding configuration
+        # Provider bidding
         self.initial_service_execution_cost = float(os.getenv("INITIAL_SERVICE_EXECUTION_COST", "5"))
         self.initial_service_execution_cost_by_effort = {
             "low": float(
@@ -245,80 +228,52 @@ class Config:
         self.initial_non_execution_cost_per_participation = float(
             os.getenv("INITIAL_NON_EXECUTION_COST_PER_PARTICIPATION", "0")
         )
-        # Heuristic bidding configuration
+        # Heuristic bidding
         self.heuristic_strategy = os.getenv("HEURISTIC_STRATEGY", "cost_plus")
         self.heuristic_min_margin = float(os.getenv("HEURISTIC_MIN_MARGIN", "0.10"))
         self.heuristic_max_margin = float(os.getenv("HEURISTIC_MAX_MARGIN", "0.30"))
         self.heuristic_bid_tick_usd = float(os.getenv("HEURISTIC_BID_TICK_USD", "0.000001"))
         self.heuristic_recovery_pressure_max = float(os.getenv("HEURISTIC_RECOVERY_PRESSURE_MAX", "1.0"))
-        # Starting margin for the derivative-follower controllers (h2_strategy_3, h3_strategy_2):
-        #   "max" (default) start greedy at max_margin and concede down (classic ZIP; spends the
-        #          first auctions probing down from the ceiling, gifting them to non-conceders);
-        #   "mid"  start at the midpoint of [min, max] — competitive from the first bid;
-        #   "random" start at a uniform draw in [min, max] — desynchronises same-group agents.
+        # Adaptive's starting margin: "max" (default) starts at max_margin and concedes
+        # down; "mid" starts at the midpoint; "random" draws it uniformly.
         self.heuristic_initial_margin_mode = os.getenv("HEURISTIC_INITIAL_MARGIN_MODE", "max").strip().lower()
 
-        # When enabled, LLM-based providers (architecture 2/3) are told to keep their bid
-        # margin within [heuristic_min_margin, heuristic_max_margin] — the same band the
-        # heuristic providers sample from. This is a prompt-level instruction only (not an
-        # enforced clamp), used to give the LLM and heuristic agents comparable action spaces.
+        # LLM-Band and later variants: the prompt asks the LLM to keep its margin within
+        # [heuristic_min_margin, heuristic_max_margin], the heuristics' band. An
+        # instruction, not an enforced clamp.
         self.llm_margin_bounds_enabled = os.getenv("LLM_MARGIN_BOUNDS_ENABLED", "false").strip().lower() in (
             "1", "true", "yes",
         )
 
-        # Reasoning-sophistication axis (R1): when enabled, LLM-based providers are shown the
-        # margin they committed on their most recent bid, and the prompt explains it. This is a
-        # single-scalar episodic memory of the last decision (distinct from the aggregate stats
-        # that R0 already exposes), toggled independently of architecture level so R0 vs R1 can
-        # be compared in the same environment.
+        # Show the LLM the margin it committed on its most recent bid.
         self.llm_last_margin_enabled = os.getenv("LLM_LAST_MARGIN_ENABLED", "false").strip().lower() in (
             "1", "true", "yes",
         )
 
-        # Reasoning-sophistication axis (R1, full episodic memory): when enabled, LLM-based
-        # providers are shown the complete decision->outcome record of their own past bids —
-        # tier chosen, margin, win/loss, reputation before/after, realized balance change.
-        # This is the superset of llm_last_margin_enabled: it supplies the outcome feedback a
-        # single-shot (R0) agent structurally lacks, so a committed policy can be learned from
-        # realized consequences rather than re-derived each cycle.
-        # Actuation mode for LLM providers. Native tool-calling asks the model to
-        # emit a `place_bid` function call; when enabled, the model instead returns
-        # schema-enforced JSON that the *system* parses and executes.
-        #
-        # Why this exists: on gpt-oss-20b the tool path silently lost 28-33% of
-        # auctions — the model reasoned correctly, wrote a well-formed bid in its
-        # text, and never emitted the call, which logged as "0 bids placed". H2's
-        # estimator (experiments/estimation/llm_client.py) has always used
-        # `response_format: json_schema` and never had to call a tool, so leaving
-        # the react arm on tool-calling handicaps it in a dimension H2's X_d was
-        # never tested on and confounds pricing reasoning with call formatting.
+        # The LLM returns schema-enforced JSON that the agent executes as a bid, instead
+        # of a native tool call: with tool calling, gpt-oss-20b often reasoned out a bid
+        # but never emitted the call.
         self.llm_structured_bid_enabled = os.getenv("LLM_STRUCTURED_BID_ENABLED", "false").strip().lower() in (
             "1", "true", "yes",
         )
 
+        # LLM-History and LLM-Reflect: show the LLM the full record of its own past
+        # bids and their outcomes (margin, win or loss, reputation, balance change).
         self.llm_outcome_history_enabled = os.getenv("LLM_OUTCOME_HISTORY_ENABLED", "false").strip().lower() in (
             "1", "true", "yes",
         )
-        # Cap on how many past auctions are rendered (most recent first). 0 = no limit.
+        # How many past auctions are shown, most recent first; 0 = all.
         self.llm_outcome_history_limit = int(os.getenv("LLM_OUTCOME_HISTORY_LIMIT", "0"))
 
-        # Reasoning-sophistication axis (R2, reflection with a self-edited strategy memo).
-        # Before each bidding decision the agent makes a separate LLM call that reviews what just
-        # happened and revises a single persistent memo — keeping what still holds, rewriting what
-        # the evidence contradicts, adding what is new (self-editing memory, MemGPT/Letta-style;
-        # verbal self-critique from Reflexion, Shinn et al. 2023; insight abstraction from ExpeL,
-        # Zhao et al. 2024). The memo is sectioned into beliefs about the market, current strategy,
-        # and open questions, so the world model and the policy can be revised independently.
-        # Toggled independently of llm_outcome_history_enabled so R0 / R1 / R2 / R1+R2 are all
-        # runnable: reflection reads the outcome record internally either way. The reflection
-        # call's LLM cost is charged to the agent like any other reasoning cost.
+        # LLM-Reflect: before each decision, a separate LLM call reviews what happened and
+        # revises a persistent strategy memo (beliefs about the market, current strategy,
+        # open questions), which the bidding prompt then shows. Its cost is charged to
+        # the agent like any other reasoning cost.
         self.llm_reflection_enabled = os.getenv("LLM_REFLECTION_ENABLED", "false").strip().lower() in (
             "1", "true", "yes",
         )
 
-        # Optional per-run overrides of the architecture's default LLM model, so the model
-        # can be an experimental variable (set via YAML/CLI) instead of a code edit to
-        # ARCHITECTURES. Empty/unset means "use the architecture's hardcoded default".
+        # Per-run overrides of the architecture's default models; unset uses the default.
         self.blockchain_llm_override = os.getenv("BLOCKCHAIN_LLM_MODEL", "").strip() or None
         self.service_llm_override = os.getenv("SERVICE_LLM_MODEL", "").strip() or None
 
@@ -330,7 +285,7 @@ class Config:
         llm_sampling_seed_raw = os.getenv("LLM_SAMPLING_SEED", "").strip()
         self.llm_sampling_seed = int(llm_sampling_seed_raw) if llm_sampling_seed_raw else None
 
-        # Cost estimate smoothing configuration
+        # Execution-cost estimate (EMA)
         self.execution_cost_ema_alpha = min(
             1.0,
             max(0.0, float(os.getenv("EXECUTION_COST_EMA_ALPHA", "0.25"))),
@@ -340,12 +295,12 @@ class Config:
             max(0.0, float(os.getenv("NON_EXECUTION_COST_EMA_ALPHA", "0.20"))),
         )
         
-        # Cost tracking constants (for economic simulation)
+        # Gas
         self.gas_cost_mode = os.getenv("GAS_COST_MODE", "receipt")  # "receipt" or "fixed"
         self.gas_price_gwei = float(os.getenv("GAS_PRICE_GWEI", "20.0"))
         self.eth_price_usd = float(os.getenv("ETH_PRICE_USD", "3000.0"))
 
-        # Token pricing by execution domain.
+        # Token prices per role
         self.reasoning_llm_input_price_per_1k = float(
             os.getenv("REASONING_LLM_INPUT_PRICE_PER_1K", "0.00075")
         )
@@ -361,9 +316,8 @@ class Config:
         self.embedding_input_price_per_1k = float(
             os.getenv("EMBEDDING_INPUT_PRICE_PER_1K", "0.00002")
         )
-        # Consumer-side token pricing (requirement generation + evaluation). Defaults
-        # follow the service-LLM prices because the consumer side runs the same model;
-        # override if the two are split.
+        # Consumer-side prices (request generation, evaluation); default to the
+        # service-LLM prices, since the consumer runs the same model.
         self.consumer_llm_input_price_per_1k = float(
             os.getenv("CONSUMER_LLM_INPUT_PRICE_PER_1K", str(self.service_llm_input_price_per_1k))
         )
@@ -371,13 +325,11 @@ class Config:
             os.getenv("CONSUMER_LLM_OUTPUT_PRICE_PER_1K", str(self.service_llm_output_price_per_1k))
         )
         
-        # Coupling mode configuration
-        self.coupling_mode = os.getenv("COUPLING_MODE", "isolated")  # "isolated", "one_way", "two_way"
+        self.coupling_mode = os.getenv("COUPLING_MODE", "isolated")  # "isolated", "one_way" or "two_way"
         
-        # Experimental architecture selection
-        self.architecture = os.getenv("ARCHITECTURE", "1")  # Default to architecture 1
+        self.architecture = os.getenv("ARCHITECTURE", "1")
         
-        # Effort tier configuration for service-execution search budgets.
+        # Search budget per effort tier
         self.service_max_tool_calls_by_effort = {
             "low": int(os.getenv("SERVICE_MAX_TOOL_CALLS_LOW", "1")),
             "medium": int(os.getenv("SERVICE_MAX_TOOL_CALLS_MEDIUM", "3")),
@@ -409,12 +361,11 @@ class Config:
         }
         self.default_effort_tier = "medium"
         
-        # Environment
         self.environment = os.getenv("ENVIRONMENT", "development")
         self.debug = os.getenv("DEBUG", "true").lower() == "true"
     
     def get_initial_service_execution_cost_for_effort(self, effort_tier: str = None) -> float:
-        """Return prior execution-cost estimate for the requested effort tier."""
+        """The execution-cost prior for an effort tier."""
         normalized = str(effort_tier or self.default_effort_tier).strip().lower()
         if normalized not in {"low", "medium", "high"}:
             normalized = self.default_effort_tier
@@ -427,7 +378,7 @@ class Config:
         )
 
     def get_initial_quality_rating_for_effort(self, effort_tier: str = None) -> float:
-        """Return prior quality-rating estimate for the requested effort tier."""
+        """The quality-rating prior for an effort tier."""
         normalized = str(effort_tier or self.default_effort_tier).strip().lower()
         if normalized not in {"low", "medium", "high"}:
             normalized = self.default_effort_tier
@@ -446,7 +397,7 @@ class Config:
         )
 
     def get_service_execution_budget_for_effort(self, effort_tier: str = None) -> dict:
-        """Return the configured tool/retrieval budget for a service effort tier."""
+        """The tool-call and retrieval budget of an effort tier."""
         normalized = str(effort_tier or self.default_effort_tier).strip().lower()
         if normalized not in {"low", "medium", "high"}:
             normalized = self.default_effort_tier
@@ -482,12 +433,7 @@ class Config:
         }
     
     def validate(self) -> bool:
-        """
-        Validate that required configuration is present.
-        
-        Returns:
-            True if valid, False otherwise
-        """
+        """Whether the required settings are present; logs what is missing."""
         errors = []
         
         if not self.openrouter_api_key:
@@ -508,7 +454,7 @@ class Config:
         return True
     
     def display(self):
-        """Display current configuration (hiding sensitive data)."""
+        """Log the configuration, hiding secrets."""
         print("Configuration:")
         print(f"  Google API Key: {'✓ Set' if self.google_api_key else '✗ Not set'}")
         print(f"  Pinata JWT: {'✓ Set' if self.pinata_jwt else '✗ Not set'}")
@@ -526,9 +472,7 @@ class Config:
         print(f"  Debug: {self.debug}")
 
 
-# ============================================================================
-# Experimental Architecture Configurations
-# ============================================================================
+# --- Agent architectures ---
 
 from dataclasses import dataclass
 from typing import List
@@ -536,13 +480,13 @@ from typing import List
 
 @dataclass
 class ArchitectureConfig:
-    """Configuration for a specific agent architecture variant."""
+    """An agent architecture: its reasoning mode, state level and default models."""
     name: str
     description: str
     state_level: int 
-    reasoning_mode: str  # "deterministic", "llm_react", "llm_strategic"
-    coupling_mode: str  # "isolated", "one_way", "two_way"
-    prompt_template: str  # "minimal", "guided", "rich"
+    reasoning_mode: str  # "heuristic" or "llm_react"
+    coupling_mode: str  # "isolated", "one_way" or "two_way"
+    prompt_template: str
     enabled_tools: List[str]
     blockchain_llm: str = "openai/gpt-4o-mini"
     service_llm: str = "openai/gpt-4o-mini"
@@ -551,7 +495,6 @@ class ArchitectureConfig:
     llm_temperature: float = 0.0
 
 
-# Architecture registry - add more as experiments evolve
 ARCHITECTURES = {
     "1": ArchitectureConfig(
         name="Architecture 1",
@@ -581,12 +524,11 @@ ARCHITECTURES = {
 
 
 def get_architecture(name: str) -> ArchitectureConfig:
-    """Get architecture configuration by name."""
     if name not in ARCHITECTURES:
         available = ", ".join(ARCHITECTURES.keys())
         raise ValueError(f"Unknown architecture '{name}'. Available: {available}")
     return ARCHITECTURES[name]
 
 
-# Global configuration instance
+# Shared instance.
 config = Config()

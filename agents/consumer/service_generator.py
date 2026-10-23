@@ -1,7 +1,7 @@
-"""
-Service Generator - LLM-based generator for service requirements.
+"""The consumer's request generator: an LLM writes the prompts of a literature-review job from paper abstracts.
 
-Uses LLM to generate custom prompts for literature review services based on paper abstracts.
+Used by the live market mode and by the dataset collection, which writes each
+request to a slot of the requirement plan (:meth:`ServiceGenerator.generate_prompts_for_plan_slot`).
 """
 
 import logging
@@ -91,8 +91,8 @@ DISPERSION_INSTRUCTIONS: Dict[str, str] = {
     ),
 }
 
-#: Prompts must demand detail that cannot be recalled, only looked up: in a pilot the
-#: executor answered well-known papers from prior knowledge, without the documents.
+# Prompts must demand detail that cannot be recalled, only looked up: otherwise
+# the executor can answer well-known papers from prior knowledge.
 SPECIFICITY_RULES = """Every prompt must be unanswerable from general familiarity with this
 literature. Someone who has read about this topic but does not have these specific documents open
 must not be able to answer. Demand the kind of detail that only the document carries: reported
@@ -105,21 +105,15 @@ analyst answering these prompts has the full papers and will search them."""
 
 
 class ServiceGenerator:
-    """
-    LLM-based service generator for literature review requirements.
-    
-    Generates custom prompts from one or more paper abstracts per service.
-    """
+    """Generates literature-review requests from one or more paper abstracts."""
     
     def __init__(self, config: Config):
-        """Initialize service generator with LLM and IPFS clients."""
         self.config = config
         self.ipfs_client = IPFSClient()
-        self.processed_pdfs: Set[str] = set()  # Track processed PDFs in memory
+        self.processed_pdfs: Set[str] = set()  # PDFs already used in this session
         self.service_generation_timeout = max(1, int(getattr(config, "service_generation_timeout", 180)))
         
-        # Initialize OpenRouter LLM. The model is config-driven so the consumer-side
-        # choice can be recorded per collection instead of edited in source.
+        # The model comes from the config, so it is recorded per collection.
         self.model_name = str(
             getattr(config, "service_generation_model", None) or "openai/gpt-oss-20b"
         )
@@ -130,8 +124,7 @@ class ServiceGenerator:
             temperature=0.7
         )
 
-        # Consumer-side spend, accumulated across every generation call this
-        # instance makes, for the collection manifest.
+        # Consumer-side spend of all generation calls, for the collection manifest.
         self.generation_llm_calls = 0
         self.generation_input_tokens = 0
         self.generation_output_tokens = 0
@@ -147,7 +140,7 @@ class ServiceGenerator:
         )
 
     def generation_usage(self) -> Dict[str, Any]:
-        """Total requirement-generation spend so far, for the collection manifest."""
+        """Total request-generation spend so far, for the collection manifest."""
         return {
             "model": self.model_name,
             "llm_calls": self.generation_llm_calls,
@@ -159,11 +152,10 @@ class ServiceGenerator:
         }
 
     def _record_model_usage(self, response: Any) -> Dict[str, int]:
-        """Pull token usage off one LLM response and add it to the running totals.
+        """Add one LLM response's token usage to the running totals.
 
-        LangChain surfaces usage in more than one place depending on the provider,
-        so both known shapes are tried; an unusable response counts as a call with
-        zero tokens rather than raising.
+        Both of LangChain's usage shapes are tried; an unusable response counts as a call
+        with zero tokens.
         """
         input_tokens = 0
         output_tokens = 0
@@ -193,7 +185,7 @@ class ServiceGenerator:
                 output_tokens = _non_negative(
                     token_usage.get("completion_tokens") or token_usage.get("output_tokens")
                 )
-        except Exception as exc:  # pragma: no cover - provider metadata is best-effort
+        except Exception as exc:  # provider metadata is best-effort
             logger.warning("Could not read token usage from generation response: %s", exc)
             input_tokens = 0
             output_tokens = 0
@@ -212,37 +204,15 @@ class ServiceGenerator:
         sampling_iterations: int = 1,
         sampling_seed: int = None,
     ) -> Dict[str, Any]:
-        """
-        Generate service descriptions from PDFs in a directory.
-        
-                For each generated service:
-        1. Check if already processed (skip if skip_processed=True)
-        2. Read abstract(s) from .txt file(s)
-        3. Generate custom prompts using LLM
-        4. Upload PDF file(s) to IPFS
-        5. Create service description with one or many PDF CIDs
-        6. Upload service description to IPFS
+        """Generate job descriptions from the PDFs (with abstracts) in a directory, for the live market mode.
 
-                Sampling strategies:
-                - sequential_groups: deterministic chunking in sorted filename order.
-                - random_iterations: each iteration samples `pdfs_per_service` PDFs from
-                    the full directory pool (without replacement within an iteration,
-                    with replacement across iterations).
-        
-        Args:
-            pdf_dir: Directory containing PDF files and their abstracts
-            skip_processed: Skip PDFs already processed in this session
-            pdfs_per_service: Number of PDFs bundled into one service
-            sampling_mode: sequential_groups or random_iterations
-            sampling_iterations: Number of random sampling iterations
-            sampling_seed: Optional random seed for deterministic sampling
-            
-        Returns:
-            Dict with 'processed', 'skipped', and 'failed' lists
+        For each job: read the abstracts, generate the prompts, pin the PDFs and the job
+        description to IPFS. ``sampling_mode`` "sequential_groups" chunks the PDFs in
+        file-name order; "random_iterations" draws ``pdfs_per_service`` PDFs per job.
+        Returns the ``processed``, ``skipped`` and ``failed`` jobs.
         """
         logger.info(f"Generating services from PDFs in {pdf_dir}")
         
-        # Find all PDFs
         pdf_paths = sorted(pdf_dir.glob("*.pdf"))
         
         if not pdf_paths:
@@ -445,13 +415,12 @@ class ServiceGenerator:
         self,
         pdf_paths: List[Path]
     ) -> Dict[str, Any]:
-        """Generate one service description from one or many PDFs."""
+        """Generate and publish one job description from one or more PDFs."""
         if not pdf_paths:
             raise ValueError("pdf_paths cannot be empty")
 
         pdf_names = [pdf_path.name for pdf_path in pdf_paths]
 
-        # 1. Read abstract(s)
         paper_abstracts: List[Dict[str, str]] = []
         for pdf_path in pdf_paths:
             abstract = self._read_abstract(pdf_path)
@@ -462,10 +431,8 @@ class ServiceGenerator:
                 }
             )
 
-        # 2. Generate custom prompts using one or many abstracts
         prompts = await self._generate_prompts_from_abstracts(paper_abstracts)
 
-        # 3. Upload PDFs to IPFS
         pdf_cids: Dict[str, str] = {}
         for pdf_path in pdf_paths:
             logger.info(f"  Uploading {pdf_path.name}...")
@@ -481,7 +448,6 @@ class ServiceGenerator:
             pdf_cids[pdf_path.name] = str(pdf_result.cid)
             logger.info(f"  ✅ PDF {pdf_path.name}: {pdf_result.cid}")
 
-        # 4. Create service description
         if len(pdf_paths) == 1:
             primary_stem = pdf_paths[0].stem
             service_title = f"Literature Review: {primary_stem}"
@@ -517,7 +483,6 @@ class ServiceGenerator:
         else:
             service_desc["input_files"] = pdf_cids
 
-        # 5. Upload service description to IPFS
         service_result = await self.ipfs_client.pin_json(
             data=service_desc,
             name=f"service-{service_title[:30]}",
@@ -549,7 +514,7 @@ class ServiceGenerator:
         }
     
     def _read_abstract(self, pdf_path: Path) -> str:
-        """Read abstract from .txt file alongside PDF."""
+        """The abstract in the ``.txt`` file next to a PDF."""
         abstract_path = pdf_path.with_suffix('.txt')
         
         if not abstract_path.exists():
@@ -569,7 +534,7 @@ class ServiceGenerator:
     
     @staticmethod
     def _normalize_prompt_source_ids(prompts: List[str], source_ids: List[str]) -> List[str]:
-        """Replace simple Paper N references with configured source IDs."""
+        """Replace "Paper N" references with the source ids."""
         if not source_ids:
             return [str(prompt) for prompt in prompts]
 
@@ -603,7 +568,6 @@ class ServiceGenerator:
         self,
         paper_abstracts: List[Dict[str, str]],
     ) -> List[str]:
-        """Generate literature review prompts from one or many abstracts."""
         if not paper_abstracts:
             return self._get_default_prompts()
 
@@ -687,10 +651,9 @@ Generate 5 specific questions for this paper's literature review:"""
             )
             self._record_model_usage(response)
 
-            # Parse JSON response
             response_text = response.content.strip()
             
-            # Remove markdown code blocks if present
+            # Strip markdown code fences.
             if response_text.startswith("```"):
                 response_text = response_text.split("```")[1]
                 if response_text.startswith("json"):
@@ -702,7 +665,6 @@ Generate 5 specific questions for this paper's literature review:"""
             if not isinstance(prompts, list) or not prompts:
                 raise ValueError("LLM did not return a valid list of prompts")
             
-            # Ensure all prompts are strings
             prompts = self._normalize_prompt_source_ids([str(p) for p in prompts], source_ids)
             
             logger.info(f"  Generated {len(prompts)} prompts")
@@ -711,27 +673,23 @@ Generate 5 specific questions for this paper's literature review:"""
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LLM response as JSON: {e}")
             logger.error(f"Response: {response.content}")
-            # Fallback to default prompts
             return self._get_default_prompts(multi_paper=multi_paper, source_ids=source_ids)
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
             return self._get_default_prompts(multi_paper=multi_paper, source_ids=source_ids)
     
     
-    # ------------------------------------------------------------------
-    # Plan-driven, depth-conditioned prompt generation
-    # ------------------------------------------------------------------
+    # --- Plan-driven prompt generation (dataset collection) ---
 
     @staticmethod
     def _assign_prompt_sources(
         source_ids: List[str],
         prompt_breadths: List[int],
     ) -> List[List[str]]:
-        """Assign each planned prompt the exact source IDs it must span.
+        """The source ids each planned prompt must span.
 
-        Deterministic rotating window so coverage is spread across the document
-        set without any RNG: prompt i starts at source i and takes `breadth`
-        sources, wrapping around.
+        A rotating window, without randomness: prompt i starts at source i and takes
+        ``breadth`` sources, wrapping around.
         """
         if not source_ids:
             raise ValueError("source_ids cannot be empty")
@@ -755,7 +713,7 @@ Generate 5 specific questions for this paper's literature review:"""
 
     @staticmethod
     def _mentioned_source_ids(prompt: str, source_ids: List[str]) -> List[str]:
-        """Which source IDs a prompt actually names (case-insensitive)."""
+        """The source ids a prompt names (case-insensitive)."""
         lowered = str(prompt).lower()
         return [source_id for source_id in source_ids if source_id.lower() in lowered]
 
@@ -764,12 +722,10 @@ Generate 5 specific questions for this paper's literature review:"""
         prompts: List[str],
         assignments: List[List[str]],
     ) -> Tuple[List[str], bool]:
-        """Force every prompt to name the sources its slot assigned to it.
+        """Make every prompt name the sources its slot assigns to it.
 
-        Realized breadth is a countable feature of the requirement, so a prompt
-        that silently drops an assigned source changes the design. Missing
-        sources are prefixed rather than left out; extra mentions are left in
-        place and reported by the caller.
+        The number of sources a prompt spans is part of the design, so missing ones are
+        prefixed; extra mentions are left in place and reported by the caller.
         """
         repaired: List[str] = []
         repaired_any = False
@@ -788,7 +744,7 @@ Generate 5 specific questions for this paper's literature review:"""
         return repaired, repaired_any
 
     def _depth_fallback_prompts(self, assignments: List[List[str]], depth: str) -> List[str]:
-        """Deterministic depth-shaped prompts used only when the LLM fails."""
+        """Fixed prompts shaped by depth, used only when the LLM fails."""
         templates = {
             "locate": "In {sources}, what specific result, definition, or reported number is stated for the paper's central claim?",
             "enumerate": "For each of {sources}, list what that source reports about its method and its main measured outcome.",
@@ -813,7 +769,6 @@ Generate 5 specific questions for this paper's literature review:"""
         length_feedback: Optional[str],
         dispersion: str,
     ) -> str:
-        """Compose the LLM request for one plan slot."""
         ladder = DEPTH_LADDER[depth]
         evidence_items = ladder["evidence_items"]
         prompt_count = len(assignments)
@@ -867,7 +822,7 @@ Generate the {prompt_count} prompts at {depth} depth:"""
         return f"{system_prompt}\n\n{user_prompt}"
 
     def _parse_prompt_array(self, response_text: str, expected_count: int) -> Optional[List[str]]:
-        """Parse the model's JSON array, returning None when unusable."""
+        """Parse the model's JSON array; None when unusable."""
         text = response_text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
@@ -906,13 +861,11 @@ Generate the {prompt_count} prompts at {depth} depth:"""
         max_attempts: int = 3,
         evidence_dispersion: str = "localised",
     ) -> Dict[str, Any]:
-        """Generate one plan slot's prompts under depth, breadth, and length control.
+        """Generate one plan slot's prompts under depth, breadth and length control.
 
-        Length is enforced independently of depth: the realized total is
-        measured after every attempt and regenerated while it lands outside the
-        band, so a reconcile slot in the 1800-char band and a locate slot in the
-        4200-char band both exist. Returns the prompts plus the realized values
-        recorded with each requirement.
+        The total length is measured after every attempt and the prompts regenerated while
+        it falls outside the slot's band, so length is set independently of depth.
+        Returns the prompts and the realised values recorded with the request.
         """
         if not paper_abstracts:
             raise ValueError("paper_abstracts cannot be empty")
@@ -1064,7 +1017,7 @@ Generate the {prompt_count} prompts at {depth} depth:"""
             "generation_model": self.model_name,
             "generation_input_tokens": slot_input_tokens,
             "generation_output_tokens": slot_output_tokens,
-            # Every attempt counted, including the ones a length retry threw away.
+            # Every attempt is counted, including those a length retry discarded.
             "generation_cost_usd": round(self._price(slot_input_tokens, slot_output_tokens), 8),
             "demanded_retrieval_rounds": DEPTH_LADDER[depth_key]["demanded_retrieval_rounds"],
             "source_ids": source_ids,
@@ -1086,7 +1039,7 @@ Generate the {prompt_count} prompts at {depth} depth:"""
         multi_paper: bool = False,
         source_ids: List[str] = None,
     ) -> List[str]:
-        """Return default prompts as fallback."""
+        """Default prompts, as a fallback."""
         source_ids = [str(source_id) for source_id in (source_ids or []) if str(source_id).strip()]
 
         if multi_paper:

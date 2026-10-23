@@ -1,10 +1,8 @@
-"""
-Service Evaluator - evaluates completed service quality via iterative LLM calls.
+"""The consumer's LLM judge: rates a delivered result from 0 to 100.
 
-Per-pair criteria (depth, clarity, …) are scored in parallel, one LLM call per
-response.  Holistic criteria (completeness, …) require seeing all responses at
-once and are scored in a single separate call.  Results are merged and averaged
-to produce a 0-100 overall rating.
+Per-answer criteria (depth, clarity, ...) are scored in parallel, one call per
+answer; holistic criteria (completeness) are scored in one call over all answers.
+The scores are averaged into the rating.
 """
 
 import asyncio
@@ -26,18 +24,15 @@ logger = logging.getLogger(__name__)
 # Criteria whose value can only be judged by looking at the full response set.
 HOLISTIC_CRITERIA = {"completeness"}
 
-# Retry settings for transient LLM API failures.
 _MAX_RETRIES = 3
-_RETRY_BACKOFF = 2.0  # seconds; doubled on each attempt
+_RETRY_BACKOFF = 2.0  # seconds, doubled on each attempt
 
 
 class _UsageAccumulator:
-    """Token usage and cost for one `evaluate()` call.
+    """Token usage and cost of one ``evaluate()`` call (``len(responses) + 1`` LLM calls).
 
-    One evaluation is `len(responses) + 1` LLM calls, so the judge is a real cost
-    line. Passed explicitly down the call
-    chain rather than kept on the evaluator, so concurrent evaluations on one
-    instance cannot mix their totals.
+    Passed down the call chain rather than kept on the evaluator, so concurrent
+    evaluations on one instance cannot mix their totals.
     """
 
     __slots__ = ("llm_calls", "input_tokens", "output_tokens")
@@ -79,8 +74,8 @@ class ServiceEvaluator:
             "Authorization": f"Bearer {config.openrouter_api_key}",
             "Content-Type": "application/json",
         }
-        # Read directly: a missing `openrouter_model` must fail loudly rather than
-        # silently fall back to a model nobody chose.
+        # Read directly: a missing `openrouter_model` must fail rather than fall back to
+        # a model nobody chose.
         self._model = config.openrouter_model
         self._input_price_per_1k = float(getattr(config, "consumer_llm_input_price_per_1k", 0.0))
         self._output_price_per_1k = float(getattr(config, "consumer_llm_output_price_per_1k", 0.0))
@@ -88,24 +83,20 @@ class ServiceEvaluator:
 
     @property
     def model(self) -> str:
-        """The judge that produced the ratings — recorded alongside them."""
+        """The judge model, recorded with its ratings."""
         return self._model
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    # --- Public API ---
 
     async def evaluate(
         self,
         service_requirements: Dict[str, Any],
         result: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """
-        Evaluate a completed service result.
+        """Rate a delivered result.
 
-        Per-pair criteria are scored in parallel (one LLM call per response).
-        Holistic criteria are scored in one call over the full response set.
-        Returns rating (0-100), per-dimension quality_scores, explanations, and error.
+        Returns the rating (0-100), the per-criterion quality_scores, explanations, an
+        error if any, and what the judge cost.
         """
         logger.info("Starting evaluation...")
 
@@ -128,14 +119,14 @@ class ServiceEvaluator:
         usage = _UsageAccumulator()
 
         async with aiohttp.ClientSession() as session:
-            # --- parallel per-pair scoring ---
+            # Per-answer criteria, in parallel
             pair_tasks = [
                 self._score_pair(session, pair, per_pair_criteria, usage)
                 for pair in responses
             ]
             pair_results: List[Optional[Dict]] = await asyncio.gather(*pair_tasks)
 
-            # --- holistic scoring (single call, all responses) ---
+            # Holistic criteria, one call over all answers
             holistic_scores: Dict[str, int] = {}
             holistic_explanation: str = ""
             if holistic_criteria:
@@ -143,12 +134,12 @@ class ServiceEvaluator:
                     session, responses, holistic_criteria, usage
                 )
 
-        # Prevent inflated completeness when required prompts were not all answered.
+        # Completeness cannot exceed the share of required prompts that were answered.
         if "completeness" in holistic_scores:
             prompt_coverage_cap = self._completeness_cap(required_prompts, responses)
             holistic_scores["completeness"] = min(holistic_scores["completeness"], prompt_coverage_cap)
 
-        # Aggregate per-pair scores: average across pairs, skipping failed ones
+        # Average the per-answer scores, skipping failed ones.
         per_pair_dim_scores: Dict[str, List[int]] = {dim: [] for dim in per_pair_criteria}
         explanations: List[str] = []
         for r in pair_results:
@@ -164,7 +155,7 @@ class ServiceEvaluator:
         for dim, vals in per_pair_dim_scores.items():
             agg_scores[dim] = round(sum(vals) / len(vals)) if vals else 0
 
-        # Merge holistic scores (they override per-pair for their dimensions)
+        # Holistic scores override the per-answer ones for their criteria.
         agg_scores.update(holistic_scores)
         if holistic_explanation:
             explanations.append(holistic_explanation)
@@ -181,7 +172,7 @@ class ServiceEvaluator:
         }
 
     def _usage_payload(self, usage: _UsageAccumulator) -> Dict[str, Any]:
-        """What the judge cost, reported with every rating it produces."""
+        """What the judge cost, reported with every rating."""
         return {
             "evaluator_model": self._model,
             "evaluator_llm_calls": usage.llm_calls,
@@ -192,9 +183,7 @@ class ServiceEvaluator:
             ),
         }
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    # --- Internals ---
 
     async def _score_pair(
         self,
@@ -203,7 +192,7 @@ class ServiceEvaluator:
         criteria: Dict[str, str],
         usage: _UsageAccumulator,
     ) -> Optional[Dict]:
-        """Score a single prompt-response pair. Returns None on unrecoverable failure."""
+        """Score one prompt and its answer; None on unrecoverable failure."""
         if not criteria:
             return None
 
@@ -329,7 +318,7 @@ class ServiceEvaluator:
         criteria: Dict[str, str],
         usage: _UsageAccumulator,
     ) -> Tuple[Dict[str, int], str]:
-        """Score holistic criteria (e.g. completeness) over the full response set."""
+        """Score the holistic criteria (completeness) over all answers."""
         responses_str = "\n\n".join(
             f"[{i+1}] Prompt: {r.get('prompt', '')}\n    Response: {r.get('response', '')}"
             for i, r in enumerate(responses)
@@ -400,12 +389,9 @@ class ServiceEvaluator:
         label: str = "",
         usage: Optional[_UsageAccumulator] = None,
     ) -> Optional[Dict]:
-        """
-        Call the LLM API with up to _MAX_RETRIES attempts on transient failure.
-        Returns the parsed JSON dict or None if all attempts fail.
+        """Call the judge with up to _MAX_RETRIES attempts; the parsed JSON, or None.
 
-        Every attempt that reaches the API is charged to `usage`, retries included —
-        a retried call costs real money whether or not its answer is used.
+        Every attempt that reaches the API is charged to ``usage``, retries included.
         """
         payload = {
             "model": self._model,
@@ -454,7 +440,7 @@ class ServiceEvaluator:
 
     @staticmethod
     def _completeness_cap(required_prompts: List[str], responses: List[Dict[str, str]]) -> int:
-        """Return a 0-100 cap based on coverage of required prompts with non-empty responses."""
+        """A 0-100 cap from the share of required prompts with a non-empty answer."""
         if not required_prompts:
             return 100
 
@@ -472,7 +458,7 @@ class ServiceEvaluator:
 
     @staticmethod
     def _coerce_score(value: Any) -> Optional[int]:
-        """Convert an arbitrary score value to a bounded integer in [0, 100]."""
+        """Convert a score value to an integer in [0, 100]."""
         try:
             numeric = float(value)
         except (TypeError, ValueError):
