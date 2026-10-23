@@ -444,7 +444,10 @@ class OpenRouterProbe:
                         break
                     await asyncio.sleep(RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
 
-        self._write_cache(key, record)
+        # A call that never got a response is not cached, so a later run asks
+        # again instead of replaying the failure (e.g. a run without a valid key).
+        if "error" not in record:
+            self._write_cache(key, record)
         return self._result_from(
             record, model, arm, probe_id, repeat, cached=False, parser=parser
         )
