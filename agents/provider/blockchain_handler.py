@@ -333,14 +333,8 @@ class BlockchainHandler:
         self._revenue_recorded: set = set()
         if estimator_mode == "none":
             self._cost_estimator = None
-        elif estimator_mode in ("hybrid", "decomposed"):
-            # Same constructor arguments for both; they differ in what they ask
-            # the model and how the answer becomes dollars, not in plumbing.
-            factory = (
-                cost_estimators.HybridCostEstimator if estimator_mode == "hybrid"
-                else cost_estimators.DecomposedCostEstimator
-            )
-            self._cost_estimator = factory(
+        elif estimator_mode == "decomposed":
+            self._cost_estimator = cost_estimators.DecomposedCostEstimator(
                 model_key=self.llm_model,
                 run_seed=getattr(self.config, "run_seed", None),
                 agent_id=agent_id,
@@ -352,12 +346,6 @@ class BlockchainHandler:
             # truth from a dataset the market is not drawing from.
             self._cost_estimator = cost_estimators.OracleCostEstimator(
                 dataset_dir=str(getattr(self.config, "sampled_dataset_dir", "") or "") or None
-            )
-        elif estimator_mode == "r_rounds":
-            # Arm R-D: counting predicts the depth, then arm X's own cost model.
-            # Makes no LLM call, so it takes none of the model arguments.
-            self._cost_estimator = cost_estimators.RoundsRegressionCostEstimator(
-                mode=estimator_mode
             )
         else:
             self._cost_estimator = cost_estimators.RegressionCostEstimator(mode=estimator_mode)
@@ -1942,7 +1930,7 @@ Analyze these auctions and decide which to bid on."""
 
         levels = state.get("effort_level_execution_costs") or {}
         quality = state.get("effort_level_quality_stats") or {}
-        if isinstance(estimator, cost_estimators.HybridCostEstimator):
+        if isinstance(estimator, cost_estimators.DecomposedCostEstimator):
             # The prompt states the agent's own averages as the level the
             # multiplier is relative to. Quality comes from its own feedback.
             estimator.levels = {
@@ -2091,16 +2079,7 @@ Analyze these auctions and decide which to bid on."""
         # run records would silently report as zero.
         metrics["degraded"] = dict(getattr(estimator, "degraded", {}) or {})
         metrics["outcomes_len"] = len(getattr(estimator, "outcomes", []) or [])
-        if isinstance(estimator, cost_estimators.RoundsRegressionCostEstimator):
-            metrics.update({
-                # Stage 1 needs its own history of *realised depth*; stage 2 needs
-                # completed jobs. They fill at different rates and either can be
-                # the binding constraint, so both are recorded.
-                "rounds_history_len": len(estimator.rounds_history),
-                "n_calibration": len(estimator.calibration),
-                "pending_rounds": len(estimator.pending_rounds),
-            })
-        if isinstance(estimator, cost_estimators.HybridCostEstimator):
+        if isinstance(estimator, cost_estimators.DecomposedCostEstimator):
             metrics.update({
                 "model": estimator.model_key,
                 "calls_made": estimator.calls_made,
@@ -2117,8 +2096,8 @@ Analyze these auctions and decide which to bid on."""
                 # a run where it never fired is diagnosable from the status file.
                 fit = None
                 try:
-                    from agents.provider.estimation import prompts_decomposed as pdc
-                    fit = pdc.calibrate(estimator.calibration, two_param=True)
+                    from agents.provider.estimation import prompt as estimation_prompt
+                    fit = estimation_prompt.calibrate(estimator.calibration, two_param=True)
                 except Exception:
                     pass
                 metrics.update({
@@ -2136,7 +2115,6 @@ Analyze these auctions and decide which to bid on."""
         requirement_id: str,
         effort_tier: str,
         realized_cost_usd: float,
-        realized_mean_rounds: Optional[float] = None,
     ) -> None:
         """Add a completed job to arm R's fit history (S7 §B.2).
 
@@ -2151,17 +2129,7 @@ Analyze these auctions and decide which to bid on."""
             )
         except Exception as e:
             logger.debug(f"Could not load features for completed job {requirement_id}: {e}")
-        # Arm R-D also learns the realised depth of jobs it has finished — the
-        # same standing every arm has with realised cost. Only that arm accepts
-        # the argument, so it is passed conditionally rather than widening an
-        # interface three other estimators do not need.
-        if isinstance(self._cost_estimator, cost_estimators.RoundsRegressionCostEstimator):
-            self._cost_estimator.record_outcome(
-                requirement_id, effort_tier, realized_cost_usd,
-                realized_mean_rounds=realized_mean_rounds,
-            )
-        else:
-            self._cost_estimator.record_outcome(requirement_id, effort_tier, realized_cost_usd)
+        self._cost_estimator.record_outcome(requirement_id, effort_tier, realized_cost_usd)
         logger.info(
             "📒 Recorded job outcome for arm R: requirement=%s tier=%s cost=$%.6f (history n=%d)",
             requirement_id, effort_tier, realized_cost_usd, len(self._cost_estimator.outcomes),

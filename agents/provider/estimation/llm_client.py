@@ -1,29 +1,11 @@
-"""OpenRouter transport, repair rules, and the cache that stops double-spending.
+"""OpenRouter transport for the estimator, its repair rules, and the on-disk cache.
 
-Three things live here, and only the first is interesting.
-
-**The repair rules are pre-specified** (S2 §5). What happens to a malformed or
-refused response is decided here, in code, before any data exists — not
-improvised later when a particular model turns out to fail on a particular
-requirement. The rule is: retry the transport up to
-:data:`MAX_ATTEMPTS` times, then give up and hand the harness a *B0 prediction*
-(multiplier 1.0, delta 0.0) flagged as a failure. That choice is deliberate. An
-arm that cannot answer should score exactly as well as not asking, because that
-is what a deployed agent would fall back to; dropping the cell instead would
-quietly let a model improve its σ by refusing the requirements it finds hard.
-
-**The cache is keyed on the protocol fingerprint.** Re-running the probe after
-editing the prompt correctly misses the cache and re-spends; re-running it
-after editing this docstring does not. Cache entries are plain JSON so a
-reviewer can read exactly what came back.
-
-**Temperature.** S2 §5 freezes temperature at 0, but the pinned ``gpt-5``-family
-models do not accept a ``temperature`` parameter at all — OpenRouter's model
-metadata lists ``seed`` and ``reasoning`` for them and no ``temperature``.
-Determinism is therefore pursued with a fixed :data:`SAMPLING_SEED` and a fixed
-reasoning effort, and the 5 repeats measure whatever non-determinism remains
-rather than assuming it away. :data:`PinnedModel.sampling` records exactly what
-was sent, and that is what ``docs/estimation_protocol.md`` freezes.
+A malformed or refused response is retried up to :data:`MAX_ATTEMPTS` times and
+then replaced by a flagged fallback (multiplier 1.0), so a failed call costs the
+agent exactly what not asking would have: it bids its running average. Each call
+is cached under a key built from the exact prompt, the model, the sampling block
+and the run and agent that asked (:func:`live_cache_key`), so a re-run replays
+the recorded answers.
 """
 
 from __future__ import annotations
@@ -41,33 +23,20 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import aiohttp
 
-from agents.provider.estimation import prompts
+from agents.common.paths import LLM_CACHE_DIR as LIVE_CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = Path(__file__).resolve().parent / "cache"
-
-#: Live market runs cache separately from the probe (S7 §A.4). Two reasons:
-#: S5's 2,000-odd entries stay untouched by anything S7 does, and a live cache
-#: can be archived, inspected or deleted per experiment without disturbing the
-#: probe's frozen record.
-from agents.common.paths import LLM_CACHE_DIR as LIVE_CACHE_DIR  # noqa: E402
-
-#: Transport/parse attempts before a call is recorded as failed. Three matches
-#: the retry budget the live evaluator uses, so a probe failure rate and a
-#: market-run failure rate mean the same thing.
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 2.0
-
-#: Concurrent in-flight requests. Low deliberately: the whole probe is a few
-#: hundred calls, there is no deadline, and a rate-limit error retried three
-#: times costs more than waiting.
 DEFAULT_CONCURRENCY = 4
-
 REQUEST_TIMEOUT_SECONDS = 180
-
-#: Fixed so the probe reproduces. Not a claim that the models honour it.
 SAMPLING_SEED = 20260804
+
+#: A multiplier outside this range is a unit error, not an estimate.
+COST_MULTIPLIER_BOUNDS = (0.2, 5.0)
+QUALITY_DELTA_BOUNDS = (-100.0, 100.0)
+CONFIDENCE_BOUNDS = (0.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -86,9 +55,9 @@ class PinnedModel:
     sampling: Mapping[str, Any] = field(default_factory=dict)
 
 
-#: The pinned pair. Both are small models; see ``docs/estimation_protocol.md``
-#: §2 for why, and for what that costs the S5 model comparison.
-PINNED_MODELS: Tuple[PinnedModel, ...] = (
+#: The models of the experiments and the sampling block sent with each. The
+#: block is also part of the cache key.
+MODELS: Tuple[PinnedModel, ...] = (
     PinnedModel(
         key="gpt-5.4-mini",
         model_id="openai/gpt-5.4-mini",
@@ -96,69 +65,11 @@ PINNED_MODELS: Tuple[PinnedModel, ...] = (
         sampling={"seed": SAMPLING_SEED, "reasoning": {"effort": "low"}},
     ),
     PinnedModel(
-        key="gpt-5-mini",
-        model_id="openai/gpt-5-mini",
-        role="secondary",
-        sampling={"seed": SAMPLING_SEED, "reasoning": {"effort": "low"}},
-    ),
-)
-
-
-#: **S5's pair, chosen and recorded before the run** (S5 §2). ``docs/s2_report.md``
-#: §8 flagged that S2 ran two *small* models and so could say nothing about
-#: whether its null was a capability ceiling; S5 §2 requires one frontier and one
-#: small to fix that.
-#:
-#: **Small: ``gpt-5.4-mini``, unchanged from S2.** Holding one model constant
-#: across v1 and v2 is what makes "the S2 null was about v1, not about the model"
-#: a testable statement rather than an assertion. Swapping both models would
-#: confound dataset with capability and forfeit that comparison.
-#:
-#: **Frontier: ``gpt-5.4``, the same family and generation.** §2 wants the second
-#: arm to answer "is any effect model-dependent?", which is a question about
-#: *capability*. A different vendor would confound capability with training
-#: lineage, tokenizer, and instruction-following idiom; same-family is the
-#: controlled version of the comparison. It is also the family that generated and
-#: executed dataset v2, which matches the deployed case the hybrid would face —
-#: an agent estimating the cost of its own execution.
-#:
-#: Sampling is S2's verbatim: same seed, same ``reasoning.effort``. The protocol
-#: fingerprint does not cover the model roster, but reasoning effort is a lever
-#: that would change what the protocol *is*, so it stays fixed.
-S5_MODELS: Tuple[PinnedModel, ...] = (
-    PinnedModel(
-        key="gpt-5.4",
-        model_id="openai/gpt-5.4",
-        role="frontier",
-        sampling={"seed": SAMPLING_SEED, "reasoning": {"effort": "low"}},
-    ),
-    PinnedModel(
-        key="gpt-5.4-mini",
-        model_id="openai/gpt-5.4-mini",
-        role="small",
-        sampling={"seed": SAMPLING_SEED, "reasoning": {"effort": "low"}},
-    ),
-)
-
-
-#: Exploratory arms — **not** part of S5's pre-registered pair. Used to probe the
-#: capability gradient below ``gpt-5.4-mini``: does the redesigned prompt still
-#: work on an older, cheaper model, and what does that cost?
-#:
-#: ``gpt-4o-mini`` is a different family and does not accept ``reasoning.effort``,
-#: so sampling is ``seed`` + ``temperature: 0`` instead. That is a protocol
-#: difference and must be stated wherever its σ is quoted — it is not a
-#: like-for-like sampling comparison with the gpt-5.4 family.
-EXPLORATORY_MODELS: Tuple[PinnedModel, ...] = (
-    PinnedModel(
         key="gpt-4o-mini",
         model_id="openai/gpt-4o-mini",
         role="exploratory",
         sampling={"seed": SAMPLING_SEED, "temperature": 0},
     ),
-    # Open-weights, 20B. A reasoning model, so it takes ``reasoning.effort``
-    # like the gpt-5.4 family — which makes it the more like-for-like of the two
-    # exploratory arms.
     PinnedModel(
         key="gpt-oss-20b",
         model_id="openai/gpt-oss-20b",
@@ -167,20 +78,14 @@ EXPLORATORY_MODELS: Tuple[PinnedModel, ...] = (
     ),
 )
 
-ALL_MODELS: Tuple[PinnedModel, ...] = PINNED_MODELS + S5_MODELS + EXPLORATORY_MODELS
 
-
-def model_by_key(key: str, roster: Sequence[PinnedModel] = PINNED_MODELS) -> PinnedModel:
+def model_by_key(key: str, roster: Sequence[PinnedModel] = MODELS) -> PinnedModel:
     for model in roster:
         if model.key == key or model.model_id == key:
             return model
     known = ", ".join(m.key for m in roster)
     raise KeyError(f"unknown model {key!r}; pinned models are: {known}")
 
-
-# ---------------------------------------------------------------------------
-# Responses
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Estimate:
@@ -230,10 +135,6 @@ class CallResult:
     attempts: int
     cached: bool
 
-
-# ---------------------------------------------------------------------------
-# Parsing and repair
-# ---------------------------------------------------------------------------
 
 _JSON_BLOCK = re.compile(r"\{[\s\S]*\}")
 
@@ -323,17 +224,17 @@ def _coerce(payload: Mapping[str, Any], status: str) -> Estimate:
     for tier in ("low", "medium", "high"):
         multipliers[tier] = bounded(
             payload["cost_multiplier"][tier],
-            *prompts.COST_MULTIPLIER_BOUNDS,
+            *COST_MULTIPLIER_BOUNDS,
             label=f"cost_multiplier.{tier}",
         )
         deltas[tier] = bounded(
             payload["quality_delta"][tier],
-            *prompts.QUALITY_DELTA_BOUNDS,
+            *QUALITY_DELTA_BOUNDS,
             label=f"quality_delta.{tier}",
         )
 
     confidence = bounded(
-        payload.get("confidence", 0.0), *prompts.CONFIDENCE_BOUNDS, label="confidence"
+        payload.get("confidence", 0.0), *CONFIDENCE_BOUNDS, label="confidence"
     )
     return Estimate(
         cost_multiplier=multipliers,
@@ -343,38 +244,6 @@ def _coerce(payload: Mapping[str, Any], status: str) -> Estimate:
         status=status,
         clamped=tuple(clamped),
     )
-
-
-# ---------------------------------------------------------------------------
-# Transport
-# ---------------------------------------------------------------------------
-
-def _cache_key(
-    model: PinnedModel,
-    arm: str,
-    probe_id: str,
-    repeat: int,
-    salt: str = "",
-) -> str:
-    """Cache identity for one call.
-
-    ``salt`` lets a caller running a *different* protocol — the S5 re-run's
-    hybrid prompts — key its cache on its own fingerprint instead of S2's, so
-    editing the hybrid prompt correctly misses the cache and re-spends. Empty by
-    default, and the empty case appends nothing, so every key S2 has already
-    written stays byte-identical.
-    """
-    parts = [
-        prompts.protocol_fingerprint(),
-        model.model_id,
-        json.dumps(model.sampling, sort_keys=True),
-        arm,
-        probe_id,
-        str(repeat),
-    ]
-    if salt:
-        parts.append(salt)
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
 
 
 def live_cache_key(
@@ -414,12 +283,11 @@ def live_cache_key(
 
 
 class OpenRouterProbe:
-    """Issues probe calls, caches them, and tracks spend.
+    """Issues estimator calls and caches them.
 
-    Spend is tracked from OpenRouter's own ``usage`` block (requested with
+    Cost is taken from OpenRouter's own ``usage`` block (requested with
     ``include: true``) rather than reconstructed from token counts and a price
-    table, because the price table would go stale silently and the number is
-    going into a report.
+    table.
     """
 
     def __init__(
@@ -427,9 +295,8 @@ class OpenRouterProbe:
         api_key: str,
         *,
         base_url: str = "https://openrouter.ai/api/v1",
-        cache_dir: Path = CACHE_DIR,
+        cache_dir: Path = LIVE_CACHE_DIR,
         concurrency: int = DEFAULT_CONCURRENCY,
-        max_spend_usd: Optional[float] = None,
     ) -> None:
         if not api_key:
             raise ValueError("no OpenRouter API key; set OPENROUTER_API_KEY")
@@ -441,18 +308,11 @@ class OpenRouterProbe:
         self._cache_dir = Path(cache_dir)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._semaphore = asyncio.Semaphore(max(1, int(concurrency)))
-        self._max_spend_usd = max_spend_usd
         self.spend_usd = 0.0
         self.calls_made = 0
         self.calls_cached = 0
 
     # -- public ------------------------------------------------------------
-
-    async def run_batch(self, requests: Sequence[Dict[str, Any]]) -> List[CallResult]:
-        """Run every request, respecting concurrency and the spend cap."""
-        async with aiohttp.ClientSession() as session:
-            tasks = [self._one(session, **request) for request in requests]
-            return list(await asyncio.gather(*tasks))
 
     async def call_live(
         self,
@@ -462,9 +322,9 @@ class OpenRouterProbe:
         run_seed: Optional[int],
         agent_id: int,
         auction_id: Optional[int] = None,
-        system_message: Optional[str] = None,
-        schema: Optional[Mapping[str, Any]] = None,
-        parser: Optional[Any] = None,
+        system_message: str,
+        schema: Mapping[str, Any],
+        parser: Any,
         session: Optional[aiohttp.ClientSession] = None,
     ) -> CallResult:
         """One call from a live agent, cached by S7 §A.4's key.
@@ -484,7 +344,7 @@ class OpenRouterProbe:
             run_seed=run_seed,
             agent_id=agent_id,
             auction_id=auction_id,
-            system_message=system_message or prompts.SYSTEM_MESSAGE,
+            system_message=system_message,
         )
         request = dict(
             model=model,
@@ -504,20 +364,6 @@ class OpenRouterProbe:
         async with aiohttp.ClientSession() as owned:
             return await self._one(owned, **request)
 
-    def cache_stats(self) -> Dict[str, Any]:
-        """Live/replayed split for this client, for the run record.
-
-        A run served from cache and a run made live must not look the same in
-        the metrics: the paper's claim is that the calls were real, and that is
-        checkable only if the split is recorded (S7 §A.4).
-        """
-        return {
-            "calls_made": self.calls_made,
-            "calls_cached": self.calls_cached,
-            "spend_usd": round(self.spend_usd, 6),
-            "cache_dir": str(self._cache_dir),
-        }
-
     # -- internals ---------------------------------------------------------
 
     async def _one(
@@ -529,19 +375,12 @@ class OpenRouterProbe:
         probe_id: str,
         repeat: int,
         user_message: str,
-        system_message: Optional[str] = None,
-        schema: Optional[Mapping[str, Any]] = None,
-        cache_salt: str = "",
-        parser: Optional[Any] = None,
-        cache_key: Optional[str] = None,
+        system_message: str,
+        schema: Mapping[str, Any],
+        parser: Any,
+        cache_key: str,
     ) -> CallResult:
-        # The S5 re-run sends a different system message and schema. Defaults
-        # keep every S2 caller on the frozen protocol untouched.
-        #
-        # `cache_key` is the live path's override (S7 §A.4). Absent — which is
-        # every S2 and S5 caller — the probe key is computed exactly as before,
-        # so entries already written stay addressable.
-        key = cache_key or _cache_key(model, arm, probe_id, repeat, cache_salt)
+        key = cache_key
         cached = self._read_cache(key)
         if cached is not None:
             self.calls_cached += 1
@@ -549,21 +388,15 @@ class OpenRouterProbe:
                 cached, model, arm, probe_id, repeat, cached=True, parser=parser
             )
 
-        if self._max_spend_usd is not None and self.spend_usd >= self._max_spend_usd:
-            raise RuntimeError(
-                f"spend cap ${self._max_spend_usd:.2f} reached after "
-                f"{self.calls_made} calls (${self.spend_usd:.4f}); aborting"
-            )
-
         payload = {
             "model": model.model_id,
             "messages": [
-                {"role": "system", "content": system_message or prompts.SYSTEM_MESSAGE},
+                {"role": "system", "content": system_message},
                 {"role": "user", "content": user_message},
             ],
             "response_format": {
                 "type": "json_schema",
-                "json_schema": dict(schema) if schema else prompts.RESPONSE_SCHEMA,
+                "json_schema": dict(schema),
             },
             "usage": {"include": True},
             **dict(model.sampling),

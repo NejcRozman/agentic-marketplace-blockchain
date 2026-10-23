@@ -561,19 +561,10 @@ class Orchestrator:
         # moment the job actually completes, so the fit history can never contain
         # a job the agent has not finished — an agent may only regress on what it
         # already knows.
-        # Realised depth of this finished job, for arm R-D's stage-1 fit. None
-        # on a v2-era record, which never measured rounds — and None rather than
-        # 0.0, so "unmeasured" cannot be fitted as "needed no digging".
-        _measured_rounds = [
-            r for r in (run_record.get("retrieval_rounds_per_prompt") or []) if r is not None
-        ]
         self.blockchain_handler.record_job_outcome(
             requirement_id=requirement_id,
             effort_tier=resolved_tier,
             realized_cost_usd=execution_cost,
-            realized_mean_rounds=(
-                sum(_measured_rounds) / len(_measured_rounds) if _measured_rounds else None
-            ),
         )
 
         sampled_metadata = {
@@ -598,11 +589,7 @@ class Orchestrator:
             # ⚠️ The depth of the job being *priced* is never readable by any
             # estimator — arm X predicts these numbers from the prompt text
             # before bidding, and observing them would be reading the answer
-            # key. Depth of jobs already *completed* is different: that is the
-            # agent's own history, the same standing it has with realised cost,
-            # and arm R-D fits its features -> depth regression on exactly that
-            # (passed explicitly through `record_job_outcome`, not read here).
-            # Absent on v2 records, which is why the default is None/False rather
+            # key. Absent on v2 records, which is why the default is None/False rather
             # than 0: v2's rounds were never captured and must not look like zero
             # digging.
             "retrieval_rounds_per_prompt": copy.deepcopy(

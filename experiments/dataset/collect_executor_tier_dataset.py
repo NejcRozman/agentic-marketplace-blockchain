@@ -45,7 +45,7 @@ from agents.consumer.evaluator import ServiceEvaluator
 from agents.consumer.service_generator import DEPTH_LADDER, ServiceGenerator
 from agents.common.cost_tracker import CostTracker
 from agents.provider.service_executor import ServiceExecutor
-from agents.provider.estimation.dataset import VisibleRequirement, mechanical_features
+from agents.provider.estimation.requirement import VisibleRequirement, mechanical_features
 
 logger = logging.getLogger("executor_tier_dataset")
 

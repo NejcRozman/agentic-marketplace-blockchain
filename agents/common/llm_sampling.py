@@ -27,13 +27,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from agents.provider.estimation.llm_client import ALL_MODELS, SAMPLING_SEED
+from agents.provider.estimation.llm_client import MODELS, SAMPLING_SEED
 
 __all__ = ["SAMPLING_SEED", "resolve_sampling", "chat_model_kwargs", "is_pinned_model"]
 
 
 def _find(model_id: str):
-    for model in ALL_MODELS:
+    for model in MODELS:
         if model.model_id == model_id or model.key == model_id:
             return model
     return None
@@ -53,7 +53,7 @@ def resolve_sampling(model_id: str) -> Dict[str, Any]:
     """
     model = _find(model_id)
     if model is None:
-        known = ", ".join(sorted({m.model_id for m in ALL_MODELS}))
+        known = ", ".join(sorted({m.model_id for m in MODELS}))
         raise KeyError(
             f"no pinned sampling for model {model_id!r}; the estimation protocol "
             f"covers: {known}"
