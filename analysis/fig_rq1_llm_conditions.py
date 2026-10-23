@@ -11,7 +11,7 @@ x-scale because they show the same measure.
   b) heuristic opponent, w = 0.2, 1:1 and 1:3, gpt-oss-20b
   c) model, vs Adaptive, w = 0.2, 1:1
 
-    python -m analysis.fig_h1_llm_conditions
+    python -m analysis.fig_rq1_llm_conditions
 """
 import matplotlib.pyplot as plt
 
@@ -99,7 +99,7 @@ def main():
     fig.legend(handles=handles, loc="upper center", ncol=4, frameon=False,
                bbox_to_anchor=(0.5, 1.07))
     fig.tight_layout(w_pad=1.2)
-    style.save(fig, "h1_llm_conditions")
+    style.save(fig, "rq1_llm_conditions")
 
     print("LLM − heuristic, final net balance (USD), mean [95% CI], n")
     for letter, label, variant, d, sig in results:

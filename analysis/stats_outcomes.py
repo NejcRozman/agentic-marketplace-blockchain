@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Outcome statistics quoted in Results 6.1, 6.2, 6.4, 6.5 and Discussion 7.4.
 
-One definition throughout, the one Figure 9 (fig_h2_mechanism) uses: a per-job
+One definition throughout, the one Figure 9 (fig_rq2_mechanism) uses: a per-job
 quantity is first summarised within a seed (mean, or median for margins), and
 the reported value is the mean of these per-seed values over the 40 seeds;
 seeds in which the group won nothing are skipped. Win share is the share of the
@@ -17,8 +17,8 @@ import statistics as st
 
 from analysis.dataset import requirement_means
 from agents.common import paths
-from analysis.data import (LEDGER, NOT_IN_FAMILY, _EXEC, _HEUR_AUCTION, _metrics, decline_rate, final_net,
-                                             ok_runs, outcomes, _groups)
+from analysis.data import (LEDGER, NOT_IN_FAMILY, EXEC_COST_LINE, ADAPTIVE_BID_LINE, run_metrics, decline_rate, final_net,
+                                             ok_runs, outcomes, provider_groups)
 
 
 def per_seed(cell, group, field, summary=st.mean):
@@ -35,7 +35,7 @@ def gas_share(cell, group):
 
 def agent_status(row, group):
     return [json.loads((paths.resolve(row["run_dir"]) / f"provider_{pid}_status.json").read_text())
-            for pid in _groups(row)[group]]
+            for pid in provider_groups(row)[group]]
 
 
 def underestimated(cell, group):
@@ -44,14 +44,14 @@ def underestimated(cell, group):
     truth = requirement_means()
     bids = bids_under = won = won_under = 0
     for row in ok_runs(cell):
-        pid = _groups(row)[group][0]
-        auctions = {int(a["auction_id"]): a for a in _metrics(row)["auctions"]}
+        pid = provider_groups(row)[group][0]
+        auctions = {int(a["auction_id"]): a for a in run_metrics(row)["auctions"]}
         estimate = None
         for line in (paths.resolve(row["run_dir"]) / f"provider_agent_{pid}.log").open(errors="ignore"):
-            m = _EXEC.search(line)
+            m = EXEC_COST_LINE.search(line)
             if m:
                 estimate = float(m.group(1))
-            m = _HEUR_AUCTION.search(line)
+            m = ADAPTIVE_BID_LINE.search(line)
             if m and estimate:
                 a = auctions[int(m.group(1))]
                 under = truth[a["sampled_requirement_id"]] > estimate
@@ -126,7 +126,7 @@ def main():
     cells = sorted({json.loads(l)["cell"] for l in LEDGER.read_text().splitlines() if l.strip()}
                    - NOT_IN_FAMILY)
     for c in cells:
-        groups = _groups(ok_runs(c)[0])
+        groups = provider_groups(ok_runs(c)[0])
         if "X_decomposed" in groups:
             line(c, decline_rate(c, "X_decomposed"), ".1%")
 
@@ -137,7 +137,7 @@ def main():
             line(f"{cell} {g}", gas_share(cell, g), ".1%")
     shares = []
     for c in cells:
-        for g in _groups(ok_runs(c)[0]):
+        for g in provider_groups(ok_runs(c)[0]):
             gas = st.mean(st.mean(s["financials"]["gas_costs"] for s in agent_status(r, g)) for r in ok_runs(c))
             before = gas + st.mean(final_net(c, g))
             shares.append((gas / before if before > 0 else float("inf"), c, g))

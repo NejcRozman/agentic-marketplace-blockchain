@@ -10,7 +10,7 @@ gpt-oss-20b. Δ = first agent − second agent, final net balance, 95% t interva
 Declined = share of eligible auctions the first agent declined, counted from
 its own log.
 
-    python -m analysis.table_h2_oracle_abstention
+    python -m analysis.table_rq2_oracle_abstention
 """
 import statistics as st
 

@@ -6,7 +6,7 @@ seeds; shading is the 95% CI of that mean at each auction. Each panel has its
 own y-scale: the pairings with random bidding span ~±2 USD, band vs adaptive
 ~0.3, so a shared scale would flatten the third panel.
 
-    python -m analysis.fig_h1_ladder_trajectories
+    python -m analysis.fig_rq1_ladder_trajectories
 """
 import matplotlib.pyplot as plt
 
@@ -57,7 +57,7 @@ def main():
     fig.legend(handles=handles, loc="upper center", ncol=3, frameon=False,
                bbox_to_anchor=(0.5, 1.10), handlelength=1.5, columnspacing=1.0)
     fig.tight_layout(w_pad=0.8)
-    style.save(fig, "h1_ladder_trajectories")
+    style.save(fig, "rq1_ladder_trajectories")
 
 
 if __name__ == "__main__":

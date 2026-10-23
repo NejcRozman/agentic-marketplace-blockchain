@@ -14,7 +14,7 @@ import json
 import statistics as st
 
 from agents.common import paths
-from analysis.data import _groups, final_net, ok_runs, paired_difference, significant
+from analysis.data import provider_groups, final_net, ok_runs, paired_difference, significant
 
 XD = "X_decomposed"
 PRICING = [  # (strategy, model, cell, LLM group)
@@ -38,7 +38,7 @@ def llm_cost(cells, group):
     cost, calls, tokens = [], [], []
     for cell in cells:
         for run in ok_runs(cell):
-            pid = _groups(run)[group][0]
+            pid = provider_groups(run)[group][0]
             f = json.loads((paths.resolve(run["run_dir"]) / f"provider_{pid}_status.json").read_text())["financials"]
             cost.append(f.get("reasoning_llm_costs") or 0.0)
             calls.append(f.get("reasoning_llm_calls") or 0)

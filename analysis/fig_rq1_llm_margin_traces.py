@@ -10,7 +10,7 @@ floor); the LLM's margins show whether it reacts to outcomes at all. Margins
 are bid / cost basis − 1; points outside the y-range are drawn at the edge
 with an arrow marker and listed in the printed table.
 
-    python -m analysis.fig_h1_llm_margin_traces
+    python -m analysis.fig_rq1_llm_margin_traces
 """
 import matplotlib.pyplot as plt
 
@@ -93,7 +93,7 @@ def main():
     fig.legend(handles=handles, loc="upper center", ncol=5, frameon=False,
                bbox_to_anchor=(0.55, 1.0), handlelength=1.4, columnspacing=0.9, handletextpad=0.4)
     fig.subplots_adjust(left=0.13, right=0.98, top=0.87, bottom=0.12)
-    style.save(fig, "h1_llm_margin_traces")
+    style.save(fig, "rq1_llm_margin_traces")
 
 
 if __name__ == "__main__":

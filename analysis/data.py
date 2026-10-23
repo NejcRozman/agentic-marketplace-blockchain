@@ -76,12 +76,12 @@ def ok_runs(cell: str) -> Tuple[dict, ...]:
     return tuple(sorted(rows, key=lambda r: r["seed"]))
 
 
-def _metrics(row: dict) -> dict:
+def run_metrics(row: dict) -> dict:
     path = paths.resolve(row["run_dir"].replace("/logs/", "/metrics/")) / "experiment_metrics.json"
     return json.loads(path.read_text())
 
 
-def _groups(row: dict) -> Dict[str, List[int]]:
+def provider_groups(row: dict) -> Dict[str, List[int]]:
     """group name -> provider ids, from the run's status files."""
     out: Dict[str, List[int]] = {}
     for f in (paths.resolve(row["run_dir"])).glob("provider_*_status.json"):
@@ -94,7 +94,7 @@ def final_net(cell: str, group: str) -> List[float]:
     """Per-seed final net balance of `group` (per-agent mean), seed-ordered."""
     out = []
     for row in ok_runs(cell):
-        ids = _groups(row).get(group)
+        ids = provider_groups(row).get(group)
         if not ids:
             raise ValueError(f"{row['run_dir']}: no group {group!r}")
         nets = []
@@ -128,7 +128,7 @@ def family(cell: str) -> str:
 
 
 def contrast(cell: str) -> Tuple[str, str]:
-    groups = sorted(_groups(ok_runs(cell)[0]))
+    groups = sorted(provider_groups(ok_runs(cell)[0]))
     x = next(g for g in groups if g.startswith("X_"))
     return x, next(g for g in groups if g != x)
 
@@ -199,11 +199,11 @@ def bid_sequences(cell: str, group: str) -> List[List[Bid]]:
     """
     out = []
     for row in ok_runs(cell):
-        ids = _groups(row).get(group)
+        ids = provider_groups(row).get(group)
         if not ids or len(ids) != 1:
             raise ValueError(f"{row['run_dir']}: expected one agent in {group!r}")
         pid = ids[0]
-        auctions = _metrics(row)["auctions"]
+        auctions = run_metrics(row)["auctions"]
         winner = {int(a["auction_id"]): a.get("winner_id") for a in auctions}
         on_chain = {int(a["auction_id"]): {b["agent_id"]: b["amount"] for b in a.get("bids_on_chain") or []}
                     for a in auctions}
@@ -253,10 +253,10 @@ def outcomes(cell: str, group: str) -> List[SeedOutcome]:
     """Per seed: win share, cost and quality of jobs won, final reputation."""
     out = []
     for row in ok_runs(cell):
-        ids = set(_groups(row).get(group) or [])
+        ids = set(provider_groups(row).get(group) or [])
         if not ids:
             raise ValueError(f"{row['run_dir']}: no group {group!r}")
-        m = _metrics(row)
+        m = run_metrics(row)
         auctions = m["auctions"]
         won = [a for a in auctions if a.get("winner_id") in ids]
         cost = [float(a["quality_details"]["winner_llm_cost"]) for a in won
@@ -287,7 +287,7 @@ def decline_rate(cell: str, group: str) -> float:
     """
     declines = attempted = 0
     for row in ok_runs(cell):
-        for pid in _groups(row).get(group) or []:
+        for pid in provider_groups(row).get(group) or []:
             log = paths.resolve(row["run_dir"]) / f"provider_agent_{pid}.log"
             declines += log.read_text(errors="ignore").count("declined:")
             s = json.loads((paths.resolve(row["run_dir"]) / f"provider_{pid}_status.json").read_text())
@@ -297,8 +297,8 @@ def decline_rate(cell: str, group: str) -> float:
 
 _LEVEL = re.compile(r"Effort estimates this loop: costs=(\{[^}]*\})")
 _EST = re.compile(r"📈 (?:decomposed|r_guarded|hybrid): requirement (\S+) tier=\w+ multiplier=([0-9.]+) (\{.*\})")
-_EXEC = re.compile(r"Cost estimates this loop: execution=\$([0-9.]+)")
-_HEUR_AUCTION = re.compile(r"h2_strategy_3: auction (\d+) bid=")
+EXEC_COST_LINE = re.compile(r"Cost estimates this loop: execution=\$([0-9.]+)")
+ADAPTIVE_BID_LINE = re.compile(r"h2_strategy_3: auction (\d+) bid=")
 _AUCTION_REF = re.compile(r"(?:auction (\d+)|Skipping auction (\d+))")
 _REASON = re.compile(r"'reason': '(\w+)'")
 
@@ -322,11 +322,11 @@ def estimates(cell: str, group: str) -> List[Estimate]:
     """
     out: List[Estimate] = []
     for row in ok_runs(cell):
-        pid = (_groups(row).get(group) or [None])[0]
+        pid = (provider_groups(row).get(group) or [None])[0]
         if pid is None:
             raise ValueError(f"{row['run_dir']}: no group {group!r}")
         req_of = {int(a["auction_id"]): a.get("sampled_requirement_id")
-                  for a in _metrics(row)["auctions"]}
+                  for a in run_metrics(row)["auctions"]}
         lines = (paths.resolve(row["run_dir"]) / f"provider_agent_{pid}.log").read_text(errors="ignore").splitlines()
         level = execution = None
         seen = set()
@@ -337,7 +337,7 @@ def estimates(cell: str, group: str) -> List[Estimate]:
                     level = json.loads(m.group(1)).get("medium")
                 except ValueError:
                     pass
-            m = _EXEC.search(line)
+            m = EXEC_COST_LINE.search(line)
             if m:
                 execution = float(m.group(1))
             m = _EST.search(line)
@@ -364,7 +364,7 @@ def estimates(cell: str, group: str) -> List[Estimate]:
                                 or "'degenerate': True" in diag)
                     out.append(Estimate(m.group(1), level * float(m.group(2)), fallback))
                 continue
-            m = _HEUR_AUCTION.search(line)
+            m = ADAPTIVE_BID_LINE.search(line)
             if m and execution and group.startswith("B_none"):
                 aid = int(m.group(1))
                 if aid not in seen and req_of.get(aid):
@@ -387,10 +387,10 @@ def trajectory(cell: str, group: str) -> List[List[float]]:
     """
     out = []
     for row in ok_runs(cell):
-        ids = _groups(row).get(group)
+        ids = provider_groups(row).get(group)
         if not ids:
             raise ValueError(f"{row['run_dir']}: no group {group!r}")
-        m = _metrics(row)
+        m = run_metrics(row)
         ends = sorted(float(a["timestamp_ended"]) for a in m["auctions"])
         if len(ends) != N_AUCTIONS:
             raise ValueError(f"{row['run_dir']}: {len(ends)} auctions, expected {N_AUCTIONS}")

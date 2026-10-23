@@ -8,7 +8,7 @@ the RQ1 family (data.holm_table, Section 5.7). In 2v2/1v3/3v1 each arm is the
 per-agent mean. Both panels share one x-scale because they show the same
 measure.
 
-    python -m analysis.fig_h1_band_vs_adaptive
+    python -m analysis.fig_rq1_band_vs_adaptive
 """
 import matplotlib.pyplot as plt
 
@@ -76,7 +76,7 @@ def main():
         plt.Line2D([], [], marker="o", ls="", ms=style.MS, mfc="white", mec=c, mew=style.MEW, label="not significant"),
     ], loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.08))
     fig.tight_layout(w_pad=1.5)
-    style.save(fig, "h1_band_vs_adaptive")
+    style.save(fig, "rq1_band_vs_adaptive")
 
     print("adaptive − band, final net balance (USD), mean [95% CI], n")
     for label, d, sig in a + b:

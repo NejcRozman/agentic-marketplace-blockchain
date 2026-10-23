@@ -17,7 +17,7 @@ once.
 
 The same quantities against Regression are printed (not plotted).
 
-    python -m analysis.fig_h2_mechanism
+    python -m analysis.fig_rq2_mechanism
 """
 import math
 import statistics as st
@@ -107,7 +107,7 @@ def main():
     fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False,
                bbox_to_anchor=(0.5, 1.10))
     fig.tight_layout(w_pad=1.2)
-    style.save(fig, "h2_mechanism")
+    style.save(fig, "rq2_mechanism")
 
 
 if __name__ == "__main__":

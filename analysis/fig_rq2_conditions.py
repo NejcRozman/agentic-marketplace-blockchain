@@ -16,7 +16,7 @@ one x-scale because they show the same measure. All cells: abstention (O2c) on,
 rw = 80 vs Regression is cell C_o2c_on_rw80: config-identical to the block B
 cell that would have been generated, and run instead of it.
 
-    python -m analysis.fig_h2_conditions
+    python -m analysis.fig_rq2_conditions
 """
 import matplotlib.pyplot as plt
 
@@ -125,7 +125,7 @@ def main():
     fig.legend(handles=handles, loc="upper center", ncol=4, frameon=False,
                bbox_to_anchor=(0.5, 1.06))
     fig.tight_layout(w_pad=2)
-    style.save(fig, "h2_conditions")
+    style.save(fig, "rq2_conditions")
 
     print("LLM-Estimate − baseline, final net balance (USD), mean [95% CI], n")
     for letter, label, base, d, sig in results:

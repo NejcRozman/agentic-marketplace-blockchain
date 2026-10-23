@@ -13,7 +13,7 @@ Lines are the mean across seeds; shading is the 95% CI of that mean. Both
 panels share one y-scale: LLM-Estimate is the same agent in both, so its level is
 directly comparable across opponents.
 
-    python -m analysis.fig_h2_trajectories
+    python -m analysis.fig_rq2_trajectories
 """
 import matplotlib.pyplot as plt
 
@@ -63,7 +63,7 @@ def main():
     fig.legend(handles=handles, loc="upper center", ncol=3, frameon=False,
                bbox_to_anchor=(0.5, 1.10), handlelength=1.5, columnspacing=1.0)
     fig.tight_layout(w_pad=1.0)
-    style.save(fig, "h2_trajectories")
+    style.save(fig, "rq2_trajectories")
 
 
 if __name__ == "__main__":

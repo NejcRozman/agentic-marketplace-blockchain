@@ -9,7 +9,7 @@ opponent and condition are identical, so levels are directly comparable —
 which matters here, because a variant can beat adaptive by starving it of jobs
 rather than by earning more itself.
 
-    python -m analysis.fig_h1_llm_variant_trajectories
+    python -m analysis.fig_rq1_llm_variant_trajectories
 """
 import matplotlib.pyplot as plt
 
@@ -71,7 +71,7 @@ def main():
     fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False,
                bbox_to_anchor=(0.5, 1.0))
     fig.subplots_adjust(left=0.13, right=0.98, top=0.87, bottom=0.12)
-    style.save(fig, "h1_llm_variant_trajectories")
+    style.save(fig, "rq1_llm_variant_trajectories")
 
 
 if __name__ == "__main__":

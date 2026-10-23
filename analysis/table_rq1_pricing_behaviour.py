@@ -24,7 +24,7 @@ data.bid_sequences). Adaptive is pooled over its four LLM opponents.
 Also printed (quoted in the text): share of LLM bids below the agent's own cost
 basis, and the 90th-percentile margin of LLM-History and Adaptive at rw = 80.
 
-    python -m analysis.table_h1_pricing_behaviour
+    python -m analysis.table_rq1_pricing_behaviour
 """
 import statistics as st
 

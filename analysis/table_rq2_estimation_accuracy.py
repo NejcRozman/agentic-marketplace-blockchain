@@ -22,7 +22,7 @@ log(estimate / true cost).
 Each agent is pooled over its rw = 20 cells against both opponents. Oracle knows
 the true cost, so σ = 0 and correlation = 1 by definition (shown as reference).
 
-    python -m analysis.table_h2_estimation_accuracy
+    python -m analysis.table_rq2_estimation_accuracy
 """
 import math
 import statistics as st
