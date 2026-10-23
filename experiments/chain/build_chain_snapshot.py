@@ -31,12 +31,12 @@ history would be baked into the starting state of all 720 runs.
 Usage::
 
     python experiments/scripts/build_chain_snapshot.py experiments/configs/<cfg>.yaml \\
-        --output experiments/chain/s7_base.json
+        --output experiments/chain/sepolia_registries.json
 
 Then in the config::
 
     blockchain:
-      state_snapshot: "experiments/chain/s7_base.json"
+      state_snapshot: "experiments/chain/sepolia_registries.json"
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ from experiments.runner.experiment_runner import ExperimentRunner  # noqa: E402
 
 logger = logging.getLogger("build_chain_snapshot")
 
-DEFAULT_OUTPUT = REPO_ROOT / "experiments" / "chain" / "s7_base.json"
+DEFAULT_OUTPUT = REPO_ROOT / "experiments" / "chain" / "sepolia_registries.json"
 
 #: ERC-1967 implementation slot. Both ERC-8004 registries are proxies: the
 #: address in config holds ~130 bytes of forwarding code and the actual logic

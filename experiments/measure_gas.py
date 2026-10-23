@@ -38,7 +38,7 @@ from web3 import Web3
 warnings.filterwarnings("ignore", message=".*MismatchedABI.*")
 
 REPO = Path(__file__).resolve().parents[1]
-SNAPSHOT = REPO / "experiments/chain/s7_base.json"
+SNAPSHOT = REPO / "experiments/chain/sepolia_registries.json"
 MANIFEST = json.loads(SNAPSHOT.with_suffix(".manifest.json").read_text())
 OUT = REPO / "contracts/out"
 HISTORY = [0, 1, 10, 30, 100]          # prior ratings of the revealing provider

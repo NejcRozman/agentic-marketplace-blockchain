@@ -23,7 +23,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS_DIR = REPO_ROOT / "contracts"
 CONDITIONS_DIR = REPO_ROOT / "experiments" / "conditions"
-CHAIN_SNAPSHOT = REPO_ROOT / "experiments" / "chain" / "s7_base.json"
+CHAIN_SNAPSHOT = REPO_ROOT / "experiments" / "chain" / "sepolia_registries.json"
 
 DATA_DIR = Path(os.environ.get("MARKETPLACE_DATA_DIR", REPO_ROOT / "data")).resolve()
 LEDGER = DATA_DIR / "ledger.jsonl"
@@ -39,6 +39,7 @@ _LEGACY_PREFIXES = (
     ("experiments/data/metrics/", RUN_METRICS_DIR),
     ("experiments/data/llm_cache", LLM_CACHE_DIR),
     ("experiments/data/chain_snapshots/s7_base.json", CHAIN_SNAPSHOT),
+    ("experiments/chain/s7_base.json", CHAIN_SNAPSHOT),
     ("experiments/executor_analysis/data/datasets/executor_tier_dataset_v3/final", DATASET_FINAL_DIR),
     ("experiments/executor_analysis/data/artifacts/executor_tier_dataset_v3/", DATASET_ARTIFACTS_DIR),
     ("data/", DATA_DIR),
