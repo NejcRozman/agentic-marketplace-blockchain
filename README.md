@@ -191,3 +191,8 @@ These steps produced the committed inputs; the experiments do not need them.
   `experiments/chain/build_chain_snapshot.py` forks Sepolia once, runs the setup
   so that the ERC-8004 registries are pulled into local state, and dumps the
   chain; usage in its module docstring.
+
+## License
+
+MIT; see [LICENSE](LICENSE). The bundled libraries keep their own licenses
+(OpenZeppelin Contracts: MIT; forge-std: MIT or Apache-2.0).
