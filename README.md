@@ -43,7 +43,9 @@ pip install -r requirements-lock.txt
 cp agents/.env.example agents/.env          # then fill it in; see the comments there
 ```
 
-The contracts are compiled by the runner on first use. OpenZeppelin (v5.4.0) is
+`requirements-lock.txt` pins the exact environment the experiments ran in;
+`requirements.txt` lists only the direct dependencies, at the same versions. The
+contracts are compiled by the runner on first use. OpenZeppelin (v5.4.0) is
 a submodule; forge-std is included.
 
 ## Data
