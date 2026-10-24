@@ -377,8 +377,8 @@ class DecomposedCostEstimator:
         except asyncio.TimeoutError:
             self.calls_failed += 1
             logger.warning(
-                "🤖 decomposed estimator exceeded its %.1fs window; bidding history",
-                deadline_seconds,
+                "🤖 decomposed estimator exceeded its %s window; bidding history",
+                "unbounded" if deadline_seconds is None else f"{deadline_seconds:.1f}s",
             )
             self._degrade("deadline_exceeded")
             return 1.0, {"reason": "deadline_exceeded", "deadline_s": deadline_seconds}

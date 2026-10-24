@@ -159,6 +159,20 @@ The live mode needs Pinata (`PINATA_JWT`, or `PINATA_API_KEY` and
 `PINATA_GATEWAY_TOKEN`) in `agents/.env`. The public IPFS gateways do not
 reliably serve newly pinned content.
 
+## Tests
+
+```
+python -m pytest           # offline: no chain, no network, no LLM call
+cd contracts && forge test
+```
+
+The Python tests check that the code reproduces what ran the experiments: the
+bidding policies' decisions, the LLM pricing prompt and tool descriptions, and the
+cost estimators' outputs are compared with digests of the original code's output
+(`tests/golden.json`). With the recorded data present, they also check every
+estimator section that depends on it, and that every recorded run sold its jobs in
+the order its seed gives. Without the data, those tests are skipped.
+
 ## Rebuilding the inputs
 
 These steps produced the committed inputs; the experiments do not need them.

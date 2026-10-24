@@ -27,3 +27,6 @@ pandas==2.3.3
 scipy==1.15.3
 statsmodels==0.15.0
 matplotlib==3.10.9
+
+# tests
+pytest==9.0.3

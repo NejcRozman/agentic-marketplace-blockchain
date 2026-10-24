@@ -1,0 +1,20 @@
+{
+  "policies": "13fa4bf90f7808a4fd28795f999650a48b403571008a941e21ea051548523c6c",
+  "pricing_prompts": "3990a14212826d733859f949cde1f70937a8ca256726d1a0ea92ad0d6f7a34dc",
+  "tools": {
+    "place_bid": "f3a27e18a4baf73a1b1d4f9a649e341d2c1672c02b1859076abb93f143ced7a4",
+    "search_literature": "517e527af29d547835217c606fe07592bb0d2bca9c97a5c2c2bec3118dab2c86"
+  },
+  "estimators": {
+    "calibrate": "d76207ed0899f7cc7497a28bb72261af3c8fa4c82f01a991202833de7c33cb67",
+    "view": "1505a547197dc0fe4f4bc88100fb84232cb968c4f84fe29cf9a552ce07c9c35a",
+    "sampling": "44ac42b4c6bf585a51cf27607b761e906f1a9680ffd22bec9d519d22867685e4",
+    "surface_features_const": "6e137ffdf41d0ccfc1ed5e2c5a5d69e00b36f107afc2ecf58791a9b242cae1ef",
+    "deadline_reserve": "a416ea84421fa7e1351582da48235bac88380a337ec5cb5a9239dc7d57908b4b",
+    "parser": "4fc9b21d11a39b886e78a66225775627b52a21ab1dbc094492d4256a6c86822f",
+    "decomposed_traces": "0ebed5f1cf24198f95e34ef887c4e932b1fd2fed492ca4a9982f33ba91130ad0",
+    "decomposed_calls": "315abba8b3e48a846f75ead67131a97fb1a2fa867b00f30c2cd44991561a5fae",
+    "regression_traces": "e52d7aaa1807bd544b190a79b704a222099570531c700448fa5dcaca47b86ff3",
+    "oracle": "77150e455cdd2f74b81d691a84f6176f57f45d76c1e0224811e439415c43d6bd"
+  }
+}
