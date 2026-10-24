@@ -177,7 +177,7 @@ the order its seed gives. Without the data, those tests are skipped.
 
 These steps produced the committed inputs; the experiments do not need them.
 
-- **Corpus.** `python -m experiments.dataset.corpus.arxiv_corpus build` downloads
+- **Corpus.** `ARXIV_CONTACT=<your email> python -m experiments.dataset.corpus.arxiv_corpus build` downloads
   the 30 arXiv papers pinned in `experiments/dataset/corpus/corpus.yaml` into
   `data/corpus/` and rewrites `manifest.json`, which comes out identical to the
   committed one.

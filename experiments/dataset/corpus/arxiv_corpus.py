@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -50,7 +51,9 @@ DEFAULT_SPEC = Path(__file__).resolve().parent / "corpus.yaml"
 DEFAULT_OUT_DIR = paths.DATA_DIR / "corpus"
 
 ARXIV_API = "https://export.arxiv.org/api/query"
-USER_AGENT = "agentic-marketplace-corpus/1.0 (research; nejc.rozman@fs.uni-lj.si)"
+#: arXiv asks API clients to identify themselves; set ARXIV_CONTACT to your email address.
+USER_AGENT = "agentic-marketplace-corpus/1.0 (research{})".format(
+    f"; {os.environ['ARXIV_CONTACT']}" if os.environ.get("ARXIV_CONTACT") else "")
 
 #: arXiv asks for at least 3 s between API calls; PDF downloads use another host.
 API_DELAY_S = 3.0
