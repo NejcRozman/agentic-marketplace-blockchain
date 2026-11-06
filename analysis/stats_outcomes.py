@@ -9,15 +9,21 @@ seeds in which the group won nothing are skipped. Win share is the share of the
 Decline rate = declines / (declines + bids attempted), from the agent's log
 (data.decline_rate); conditions not reported in the paper are left out.
 Gas share = mean gas / (mean net balance + mean gas).
+Declined jobs: the auctions an agent declined, those its opponent won, and the
+opponent's earnings on them, per run, from the agent's log and the auction records
+(declined_jobs): price − execution cost, and that less the gas of completing each job
+at its Table A.1 value (the gas of a single completion is not recorded, only each
+provider's total).
 
     python -m analysis.stats_outcomes
 """
 import json
+import re
 import statistics as st
 
 from agents.common import paths
 from analysis.data import (ADAPTIVE_BID_LINE, EXEC_COST_LINE, LEDGER, NOT_IN_FAMILY, decline_rate, final_net,
-                           ok_runs, outcomes, provider_groups, run_metrics)
+                           ok_runs, outcomes, paired_difference, provider_groups, run_metrics)
 from analysis.dataset import requirement_means
 
 
@@ -63,6 +69,38 @@ def underestimated(cell, group):
                     won += 1
                     won_under += under
     return bids_under / bids, won_under / won
+
+
+DECLINED = re.compile(r"Skipping auction (\d+): declined:")
+#: Gas of completing a service (Table A.1; constant per transaction), paid by the winner.
+COMPLETE_SERVICE_GAS = 100_628
+
+
+def gas_price_usd(metrics):
+    """USD per unit of gas, at the fixed prices the run booked gas at."""
+    prov = metrics["provenance"]["resolved_config"]["agents"]["providers"]["config"]
+    assert prov["gas_cost_mode"] == "fixed"
+    return prov["gas_price_gwei"] * 1e-9 * prov["eth_price_usd"]
+
+
+def declined_jobs(cell, group, opponent):
+    """Per run (means over seeds): auctions `group` declined, how many of them `opponent`
+    won, and the opponent's earnings on those it won (USD): price − execution cost, and
+    that less the completion gas."""
+    declined, won, gross, net = [], [], [], []
+    for row in ok_runs(cell):
+        groups = provider_groups(row)
+        (pid,), (opp,) = groups[group], groups[opponent]
+        log = (paths.resolve(row["run_dir"]) / f"provider_agent_{pid}.log").read_text(errors="ignore")
+        ids = {int(a) for a in DECLINED.findall(log)}
+        metrics = run_metrics(row)
+        gas = COMPLETE_SERVICE_GAS * gas_price_usd(metrics)
+        jobs = [a for a in metrics["auctions"] if int(a["auction_id"]) in ids and a.get("winner_id") == opp]
+        declined.append(len(ids))
+        won.append(len(jobs))
+        gross.append(sum(a["winning_bid_amount"] / 1e6 - float(a["quality_details"]["winner_llm_cost"]) for a in jobs))
+        net.append(gross[-1] - len(jobs) * gas)
+    return st.mean(declined), st.mean(won), st.mean(gross), st.mean(net)
 
 
 def win(cell, group):
@@ -131,6 +169,19 @@ def main():
         groups = provider_groups(ok_runs(c)[0])
         if "X_decomposed" in groups:
             line(c, decline_rate(c, "X_decomposed"), ".1%")
+
+    print("6.5 Declined jobs, per run (gpt-oss-20b, w = 0.2)")
+    for cell, opp, name in (("A_gptoss20b_xd_vs_h", "B_none", "Adaptive"),
+                            ("A_gptoss20b_xd_vs_rguarded", "B_r_guarded", "Regression")):
+        n, won, gross, net = declined_jobs(cell, "X_decomposed", opp)
+        line(f"vs {name}: auctions declined by LLM-Estimate", n, ".2f")
+        line(f"vs {name}: of these, won by {name}", won / n, ".1%")
+        line(f"vs {name}: {name}'s earnings on them, before gas", gross, ".4f")
+        line(f"vs {name}: the same, less completion gas", net, ".4f")
+        line(f"vs {name}: {name}'s net balance", st.mean(final_net(cell, opp)), ".3f")
+    with_rule = paired_difference("A_gptoss20b_xd_vs_rguarded", "X_decomposed", "B_r_guarded").mean
+    without = paired_difference("C_o2c_off_rw20", "X_decomposed", "B_r_guarded").mean
+    line("Δ vs Regression without / with the decline rule", without / with_rule, ".1%")
 
     print("7.4 Gas as a share of earnings before gas")
     for cell, groups in (("A_gptoss20b_xd_vs_h", ("X_decomposed", "B_none")),
